@@ -43,6 +43,8 @@ def mais_dias(d, n):
 
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 _sf = os.path.join(DATA, ".secret")
 if not os.path.exists(_sf):
     open(_sf, "w").write(secrets.token_hex(32))
@@ -258,11 +260,11 @@ def alocar(item_id, produto_id, qtd, pedido_id, usuario):
 
 def devolver(pedido_id, usuario):
     d = db()
-    for r in d.execute("""SELECT pl.*, i.produto_id FROM pedido_lotes pl JOIN pedido_itens i ON i.id=pl.item_id
-                          WHERE i.pedido_id=?""", (pedido_id,)).fetchall():
+    for r in d.execute("""SELECT pl.*, i.produto_id, li.custo_unit FROM pedido_lotes pl JOIN pedido_itens i ON i.id=pl.item_id
+                          JOIN lote_itens li ON li.id=pl.lote_item_id WHERE i.pedido_id=?""", (pedido_id,)).fetchall():
         d.execute("UPDATE lote_itens SET saldo=saldo+? WHERE id=?", (r["qtd"], r["lote_item_id"]))
-        d.execute("""INSERT INTO movs (tipo,produto_id,lote_item_id,qtd,pedido_id,usuario,criado_em)
-                     VALUES ('estorno',?,?,?,?,?,?)""", (r["produto_id"], r["lote_item_id"], r["qtd"], pedido_id, usuario, agora()))
+        d.execute("""INSERT INTO movs (tipo,produto_id,lote_item_id,qtd,custo,pedido_id,usuario,criado_em)
+                     VALUES ('estorno',?,?,?,?,?,?,?)""", (r["produto_id"], r["lote_item_id"], r["qtd"], r["custo_unit"], pedido_id, usuario, agora()))
     d.execute("DELETE FROM pedido_lotes WHERE item_id IN (SELECT id FROM pedido_itens WHERE pedido_id=?)", (pedido_id,))
 
 
@@ -320,12 +322,8 @@ def preco(tabela_id, produto_id):
     return r[0] if r else 0
 
 
-def criar_pedido(j, usuario, permite_preco=False, canal_padrao="encomenda"):
+def montar_itens(j, tabela_id, permite_preco):
     d = db()
-    cli = one(d.execute("SELECT * FROM clientes WHERE id=?", (int(j.get("cliente_id") or 0),))) if j.get("cliente_id") else None
-    tabela_id = int(j.get("tabela_id") or (cli and cli["tabela_id"]) or cfg_all().get("tabela_padrao") or 1)
-    rota_id = j.get("rota_id") if j.get("rota_id") not in (None, "") else (cli and cli["rota_id"])
-    rota = one(d.execute("SELECT * FROM rotas WHERE id=?", (rota_id,))) if rota_id else None
     itens = [i for i in j.get("itens", []) if int(i.get("qtd") or 0) > 0]
     if not itens:
         raise ValueError("Pedido sem itens")
@@ -338,8 +336,36 @@ def criar_pedido(j, usuario, permite_preco=False, canal_padrao="encomenda"):
         if saldo_produto(p["id"]) < q:
             raise ValueError(f"Estoque insuficiente de {p['nome']} (disponível: {saldo_produto(p['id'])})")
         u = float(it["unit"]) if permite_preco and it.get("unit") not in (None, "") else preco(tabela_id, p["id"])
+        if u < 0:
+            raise ValueError("Preço inválido")
         linhas.append((p, q, round(u, 2)))
-        subtotal += q * u
+        subtotal += q * round(u, 2)
+    return linhas, round(subtotal, 2)
+
+
+def checar_preco(j, tabela_id):
+    """Quem não tem permissão de preço pode mexer em preço/desconto até o seu limite (%)."""
+    if "precos" in perms():
+        return True
+    itens = [i for i in j.get("itens", []) if int(i.get("qtd") or 0) > 0]
+    tab = sum(int(i["qtd"]) * preco(tabela_id, int(i["produto_id"])) for i in itens)
+    novo = sum(int(i["qtd"]) * (float(i["unit"]) if i.get("unit") not in (None, "") else preco(tabela_id, int(i["produto_id"]))) for i in itens)
+    abat = round(tab - novo + float(j.get("desconto") or 0), 2)
+    if abat <= 0.009:
+        return True
+    maxp = session.get("desc_max", 0) or 0
+    if maxp and abat <= tab * maxp / 100 + 0.01:
+        return True
+    raise PermissionError(f"Desconto acima do seu limite ({maxp:.0f}%)" if maxp else "Você não tem permissão para mudar preço ou dar desconto")
+
+
+def criar_pedido(j, usuario, permite_preco=False, canal_padrao="encomenda"):
+    d = db()
+    cli = one(d.execute("SELECT * FROM clientes WHERE id=?", (int(j.get("cliente_id") or 0),))) if j.get("cliente_id") else None
+    tabela_id = int(j.get("tabela_id") or (cli and cli["tabela_id"]) or cfg_all().get("tabela_padrao") or 1)
+    rota_id = j.get("rota_id") if j.get("rota_id") not in (None, "") else (cli and cli["rota_id"])
+    rota = one(d.execute("SELECT * FROM rotas WHERE id=?", (rota_id,))) if rota_id else None
+    linhas, subtotal = montar_itens(j, tabela_id, permite_preco)
     subtotal = round(subtotal, 2)
     frete = j.get("frete")
     if frete in (None, ""):
@@ -454,15 +480,12 @@ def pedido_get(pid):
 @exige("pedidos", "feira")
 def pedido_novo():
     j = request.json or {}
-    pode_preco = "precos" in perms()
-    if not pode_preco and float(j.get("desconto") or 0) > 0:
-        maxp = session.get("desc_max", 0)
-        sub = sum(float(i.get("qtd") or 0) * preco(int(j.get("tabela_id") or 1), int(i["produto_id"])) for i in j.get("itens", []))
-        if maxp and float(j["desconto"]) <= sub * maxp / 100 + 0.01:
-            pode_preco = True
-            j["itens"] = [{k: v for k, v in i.items() if k != "unit"} for i in j.get("itens", [])]
-        else:
-            return jsonify(erro=f"Desconto acima do seu limite ({maxp:.0f}%)"), 403
+    cli = one(db().execute("SELECT tabela_id FROM clientes WHERE id=?", (int(j.get("cliente_id") or 0),))) if j.get("cliente_id") else None
+    tabela_id = int(j.get("tabela_id") or (cli and cli["tabela_id"]) or cfg_all().get("tabela_padrao") or 1)
+    try:
+        pode_preco = checar_preco(j, tabela_id)
+    except PermissionError as e:
+        return jsonify(erro=str(e)), 403
     try:
         pid = criar_pedido(j, eu(), permite_preco=pode_preco)
     except (ValueError, KeyError) as e:
@@ -471,6 +494,45 @@ def pedido_novo():
     registrar("pedido criado", f"#{db().execute('SELECT numero FROM pedidos WHERE id=?', (pid,)).fetchone()[0]}")
     db().commit()
     return jsonify(pedido_completo(pid))
+
+
+@app.put("/api/pedidos/<int:pid>/itens")
+@exige("pedidos")
+def pedido_editar(pid):
+    j = request.json or {}
+    d = db()
+    p = pedido_completo(pid)
+    if not p:
+        abort(404)
+    if p["status"] not in ("novo", "separando"):
+        return jsonify(erro="Só dá pra editar pedido que ainda não saiu para entrega"), 400
+    try:
+        checar_preco(j, p["tabela_id"])
+        devolver(pid, eu())
+        d.execute("DELETE FROM pedido_itens WHERE pedido_id=?", (pid,))
+        linhas, subtotal = montar_itens(j, p["tabela_id"], True)
+        frete = float(j["frete"]) if j.get("frete") not in (None, "") else p["frete"]
+        desconto = float(j.get("desconto") or 0)
+        total = round(max(0, subtotal + frete - desconto), 2)
+        if p["pago"] > total + 0.009:
+            raise ValueError(f"Já foi recebido {brl(p['pago'])}, mais que o novo total {brl(total)}")
+        for pr, q, u in linhas:
+            c = d.execute("INSERT INTO pedido_itens (pedido_id,produto_id,descricao,qtd,unit,total) VALUES (?,?,?,?,?,?)",
+                          (pid, pr["id"], pr["nome"], q, u, round(q * u, 2)))
+            alocar(c.lastrowid, pr["id"], q, pid, eu())
+        d.execute("UPDATE pedidos SET subtotal=?, frete=?, desconto=?, total=?, obs=?, data_entrega=? WHERE id=?",
+                  (subtotal, frete, desconto, total, j.get("obs", p["obs"]), j.get("data_entrega", p["data_entrega"]) or "", pid))
+    except PermissionError as e:
+        d.rollback()
+        return jsonify(erro=str(e)), 403
+    except (ValueError, KeyError) as e:
+        d.rollback()
+        return jsonify(erro=str(e)), 400
+    registrar("pedido editado", f"#{p['numero']}: {brl(p['total'])} → {brl(total)}")
+    d.commit()
+    r = pedido_completo(pid)
+    r["link"] = link_publico(r)
+    return jsonify(r)
 
 
 @app.post("/api/pedidos/<int:pid>/status")
