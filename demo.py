@@ -36,9 +36,12 @@ INSUMOS = [  # nome, unidade, estoque final, mínimo, custo
 ]
 FICHA = {1: [(1, 1), (3, 1), (4, 1), (6, 1 / 12)], 2: [(2, 1), (3, 1), (5, 1), (6, 1 / 12)],
          3: [(7, 1), (9, 0.2)], 4: [(8, 1), (10, 0.15)]}
-EQUIPE = [  # nome, pin, papel, desconto_max, telefone
-    ("Lira (dono)", "1234", "admin", 100, ""), ("Ana · vendas", "1111", "vendas", 5, ""), ("Zé · produção", "2222", "producao", 0, ""),
-    ("João · entregas", "3333", "entregador", 0, ""), ("Caixa da feira", "4444", "feira", 0, ""),
+EQUIPE = [  # nome, senha inicial (troque!), papel, desconto_max, telefone, usuário, e-mail fictício
+    ("Lira (dono)", "1234", "admin", 100, "", "lira", "lira@cajuinadonajulia.exemplo"),
+    ("Ana · vendas", "1111", "vendas", 5, "", "ana", "ana@cajuinadonajulia.exemplo"),
+    ("Zé · produção", "2222", "producao", 0, "", "ze", ""),
+    ("João · entregas", "3333", "entregador", 0, "", "joao", ""),
+    ("Caixa da feira", "4444", "feira", 0, "", "feira", ""),
 ]
 # clientes FICTÍCIOS: nome, tipo, cidade, bairro, tabela, prazo, limite, perfil(frequência em dias, caixas min-max)
 CLIENTES = [
@@ -69,9 +72,9 @@ RUAS = ["Rua Coelho Rodrigues", "Av. Frei Serafim", "Rua Areolino de Abreu", "Ru
 
 def popular(d, demo, A):
     rnd = random.Random(2026)
-    for nome, pin, papel, desc, tel in EQUIPE:
-        d.execute("INSERT INTO usuarios (nome,pin,papel,permissoes,desconto_max,telefone) VALUES (?,?,?,?,?,?)",
-                  (nome, pin, papel, json.dumps(A.PAPEIS[papel]), desc, tel))
+    for nome, pin, papel, desc, tel, login, email in EQUIPE:
+        d.execute("INSERT INTO usuarios (nome,pin,papel,permissoes,desconto_max,telefone,login,email,senha_hash) VALUES (?,?,?,?,?,?,?,?,?)",
+                  (nome, pin, papel, json.dumps(A.PAPEIS[papel]), desc, tel, login, email, A.generate_password_hash(pin)))
     for t in TABELAS:
         d.execute("INSERT INTO tabelas (nome) VALUES (?)", (t,))
     for p in PRODUTOS:

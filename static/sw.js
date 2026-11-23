@@ -1,6 +1,6 @@
 // Cajuína Dona Júlia · service worker
 // 1) guarda o app no aparelho para abrir sem internet  2) recebe notificações com o app fechado
-const C = 'caju-v7';
+const C = 'caju-v8';
 const ARQS = ['/', '/cliente', '/static/style.css', '/static/app.js', '/static/logo.png', '/static/logo-contorno.png',
   '/static/icon-192.png', '/static/fotos/cajuina-300.jpg', '/static/fotos/cajuina-500.jpg', '/static/fotos/castanha.jpg',
   '/static/fotos/doce.jpg', '/static/fotos/estande.jpg'];

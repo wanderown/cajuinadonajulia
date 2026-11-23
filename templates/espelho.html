@@ -65,7 +65,9 @@ td{padding:8px;border-bottom:1px solid #f1e8dc;font-size:12.5px;vertical-align:t
       <tr><td>Frete{% if p.rota %} · rota {{ p.rota }}{% endif %}</td><td class="n">{{ 'grátis' if not p.frete else (p.frete | brl) }}</td></tr>
       {% if p.desconto %}<tr><td>Desconto</td><td class="n">− {{ p.desconto | brl }}</td></tr>{% endif %}
       {% if p.pago and p.aberto > 0.009 %}<tr><td>Já pago</td><td class="n">− {{ p.pago | brl }}</td></tr>{% endif %}
-      <tr class="big"><td>TOTAL</td><td class="n">R$ {{ p.total | brl }}</td></tr></table>
+      <tr class="big"><td>TOTAL</td><td class="n">R$ {{ p.total | brl }}</td></tr>
+      {% if p.aberto > 0.009 and p.pago %}<tr><td>Falta pagar deste pedido</td><td class="n" style="color:#D7261E;font-weight:800">R$ {{ p.aberto | brl }}</td></tr>{% endif %}
+      {% if p.outros_aberto and p.outros_aberto > 0.009 %}<tr><td colspan="2" style="padding-top:8px"><div style="background:#FDECEA;border-left:4px solid #D7261E;border-radius:6px;padding:7px 10px;font-size:11.5px">Saldo anterior em aberto: <b>R$ {{ p.outros_aberto | brl }}</b><br>Total devido com este pedido: <b>R$ {{ (p.outros_aberto + p.aberto) | brl }}</b></div></td></tr>{% endif %}</table>
   </div>
   {% if p.status == 'entregue' and (p.comprovante or p.comprovante_obs or p.recebido_por) %}
   <div class="ent"><div class="carimbo">✓ ENTREGUE</div><div><b>Entrega {{ 'comprovada com espelho assinado' if p.comprovante else 'registrada' }}</b><br>

@@ -117,7 +117,7 @@ async function sincronizarAgora() {
     try { r = await fetch(it.url, { method: it.method, headers: { 'Content-Type': 'application/json', 'X-Id-Local': it.id }, body: it.body === undefined ? undefined : JSON.stringify(it.body) }); }
     catch (e) { NET.on = false; parou = true; break; }
     NET.on = true;
-    if (r.status === 401) { parou = true; if (S.pinOff) { try { await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: S.pinOff }) }); continue; } catch (e) { } } break; }
+    if (r.status === 401) { parou = true; if (S.credOff) { try { const lr = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(S.credOff) }); if (lr.ok) { S.credOff = null; continue; } } catch (e) { } } break; }
     const q = fila(); q.shift(); ls.set(OUT, q);
     if (r.ok) enviados++;
     else { const j = await r.json().catch(() => ({})); ls.set(FALHAS, [...falhas(), { ...it, erro: j.erro || 'Erro ' + r.status }]); toast(`Não deu pra enviar "${it.desc}": ${j.erro || r.status}`, 'err'); }
@@ -134,7 +134,7 @@ function barraRede() {
   let el = document.getElementById('net');
   if (!el) { el = document.createElement('div'); el.id = 'net'; document.body.prepend(el); }
   const n = fila().length, f = falhas().length;
-  if (!NET.on) { el.className = 'net off'; el.innerHTML = `📴 Sem internet · trabalhando offline${n ? ` · ${n} ${n > 1 ? 'ações' : 'ação'} aguardando envio` : ''}`; }
+  if (!NET.on) { el.className = 'net off'; el.innerHTML = `<i class="ic-off"></i>Sem internet · trabalhando offline${n ? ` · ${n} ${n > 1 ? 'ações' : 'ação'} aguardando envio` : ''}`; }
   else if (NET.sync || n) { el.className = 'net sync'; el.innerHTML = `⏳ Enviando ${n} ${n > 1 ? 'ações' : 'ação'} feitas sem internet…`; }
   else if (f) { el.className = 'net erro'; el.innerHTML = `⚠ ${f} ${f > 1 ? 'ações não foram aceitas' : 'ação não foi aceita'} pelo sistema <button id="vfal">ver</button>`; $('#vfal').onclick = verFalhas; }
   else { el.className = ''; el.innerHTML = ''; }
@@ -222,34 +222,75 @@ function render() {
   const titulo = (MENU.find(m => m[0] === v) || [])[1] || '';
   $('#app').innerHTML = `${cfg('demo') === '1' ? '<div class="demo">MODO DEMONSTRAÇÃO · dados fictícios</div>' : ''}
    <div class="top"><img src="/static/logo.png" alt="Cajuína Dona Júlia"><b class="ttl">${esc(titulo)}</b><nav class="nav">${itens.map(([k, n]) => `<a href="#${k}" class="${k === v ? 'on' : ''}">${n}</a>`).join('')}</nav>
-   <div class="me"><span class="nm">${esc(S.me.nome)}</span><button class="icb" id="bnot" title="Notificações">${ico2('sino')}</button><button class="icb" id="btema" title="Modo claro/escuro">${ico2(ls.get('caju_tema', 'claro') === 'escuro' ? 'sol' : 'lua')}</button><button id="sair">Sair</button></div></div><main id="main"></main>
+   <div class="me"><span class="nm">${esc(S.me.nome)}</span><button class="icb" id="bnot" title="Notificações">${ico2('sino')}</button><button class="icb" id="btema" title="Modo claro/escuro">${ico2(ls.get('caju_tema', 'claro') === 'escuro' ? 'sol' : 'lua')}</button><button id="sair">Conta</button></div></div><main id="main"></main>
    <nav class="bnav">${nb.map(([k, n]) => `<a href="#${k}" class="${k === v ? 'on' : ''}">${ico(k)}<span>${n.split(' ')[0]}</span></a>`).join('')}${resto.length ? `<a href="#" id="mais" class="${resto.some(m => m[0] === v) ? 'on' : ''}">${ico('mais')}<span>Mais</span></a>` : ''}</nav>`;
   $('#mais') && ($('#mais').onclick = e => { e.preventDefault(); const m = modal({ title: 'Menu', body: `<div class="maisg">${resto.map(([k, n]) => `<a href="#${k}" class="${k === v ? 'on' : ''}">${ico(k)}<span>${n}</span></a>`).join('')}</div>` }); $$('a', m).forEach(a => a.onclick = () => m.close()); });
-  $('#sair').onclick = async () => { if (fila().length && !confirm('Ainda tem ações feitas sem internet esperando envio. Se sair agora, elas só vão quando alguém entrar de novo neste aparelho. Sair mesmo assim?')) return; try { await api('/api/logout', { body: {} }); } catch (e) { } S.me = null; S.pinOff = null; limparCache(); location.hash = ''; render(); };
+  $('#sair').onclick = menuConta;
   $('#btema').onclick = trocarTema;
   $('#bnot').onclick = menuNotif;
   pushSub().then(s => s && $('#bnot')?.classList.add('on')).catch(() => { });
   ({ painel: telaPainel, pedidos: telaPedidos, producao: telaProducao, estoque: telaEstoque, clientes: telaClientes, rotas: telaRotas,
      entregas: telaEntregas, feira: telaFeira, financeiro: telaFinanceiro, equipe: telaEquipe, config: telaConfig })[v]($('#main'));
 }
-function telaLogin() {
-  let pin = '';
-  $('#app').innerHTML = `<div class="login"><div class="box"><img src="/static/logo.png" alt="Cajuína Dona Júlia"><h3>Sistema de gestão</h3><p class="mut small">Digite seu PIN</p>
-    <div class="pin">${'<i></i>'.repeat(4)}</div><div class="pad">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 'C', 0, '⏎'].map(k => `<button data-k="${k}">${k}</button>`).join('')}</div>
-    <p class="small mt" id="lerr">&nbsp;</p><a href="/cliente" class="small mut" style="display:block;margin-top:8px">Sou cliente → área do cliente</a></div></div>`;
-  const pins = $$('.pin i'), draw = () => pins.forEach((p, i) => p.classList.toggle('f', i < pin.length));
-  const hashPin = async p => { try { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('caju:' + p)); return [...new Uint8Array(h)].map(x => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return 'x' + p.length; } };
-  const go = async () => {
-    try { S.me = await api('/api/login', { body: { pin } }); ls.set(CK + '/api/me', S.me); const pins = ls.get('caju_pins', {}); pins[await hashPin(pin)] = S.me; ls.set('caju_pins', pins); await carregar(); location.hash = ''; render(); }
-    catch (e) {
-      if (/conexão/i.test(e.message)) { const me = ls.get('caju_pins', {})[await hashPin(pin)]; const b = ls.get(CK + '/api/base');
-        if (me && b) { S.me = me; S.b = b; ls.set(CK + '/api/me', me); S.pinOff = pin; location.hash = ''; render(); toast('Entrou sem internet — tudo que fizer será enviado quando a conexão voltar'); return; }
-        e = new Error('Sem internet. Para entrar offline, este PIN precisa ter entrado antes neste aparelho com internet.'); }
-      pin = ''; draw(); $('#lerr').innerHTML = `<b class="red">${esc(e.message)}</b>`; }
+const hashTxt = async t => { try { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('caju:' + t)); return [...new Uint8Array(h)].map(x => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return 'x' + t.length; } };
+function telaLogin(passo = 'entrar', ident0 = '') {
+  const lembrado = ls.get('caju_ultimo_usuario', '');
+  const olho = `<button type="button" class="olho" tabindex="-1" aria-label="Mostrar senha">👁</button>`;
+  const telas = {
+    entrar: `<h3>Acesso da equipe</h3><p class="lsub">Entre com seu usuário, e-mail ou CPF</p>
+      <form id="lf" autocomplete="on"><label>Usuário, e-mail ou CPF</label><input id="lu" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" value="${esc(ident0 || lembrado)}" placeholder="ex.: ana ou ana@email.com" required>
+      <label class="mt">Senha</label><div class="pw"><input id="lp" type="password" name="password" autocomplete="current-password" placeholder="Sua senha" required>${olho}</div>
+      <label class="lemb"><input type="checkbox" id="lr" ${lembrado ? 'checked' : ''}> Lembrar meu usuário neste aparelho</label>
+      <button class="btn lg full" id="lb">Entrar</button></form>
+      <p class="small" id="lerr"></p><button class="lnk" id="esq">Esqueci minha senha</button>`,
+    esqueci: `<h3>Recuperar acesso</h3><p class="lsub">Vamos mandar um código para o e-mail ou WhatsApp cadastrado</p>
+      <form id="lf"><label>Usuário, e-mail ou CPF</label><input id="lu" autocapitalize="none" value="${esc(ident0 || lembrado)}" required>
+      <button class="btn lg full mt" id="lb">Enviar código</button></form><p class="small" id="lerr"></p><button class="lnk" id="volta">← Voltar</button>`,
+    codigo: `<h3>Criar nova senha</h3><p class="lsub" id="onde">Digite o código que você recebeu</p>
+      <form id="lf"><label>Código de 6 números</label><input id="lc" inputmode="numeric" autocomplete="one-time-code" maxlength="6" class="cod" placeholder="••••••" required>
+      <label class="mt">Nova senha (mínimo 6)</label><div class="pw"><input id="lp" type="password" autocomplete="new-password" minlength="6" required>${olho}</div>
+      <button class="btn lg full mt" id="lb">Salvar e entrar</button></form><p class="small" id="lerr"></p><button class="lnk" id="volta">← Voltar</button>`
   };
-  const k = x => { if (x === 'C') pin = ''; else if (x === '⏎') return go(); else if (pin.length < 8) pin += x; draw(); if (pin.length >= 4 && x !== 'C') { clearTimeout(k.t); k.t = setTimeout(() => pin.length >= 4 && go(), 650); } };
-  $$('.pad button').forEach(b => b.onclick = () => k(b.dataset.k));
-  document.onkeydown = e => { if (S.me) return (document.onkeydown = null); if (/^\d$/.test(e.key)) k(e.key); if (e.key === 'Enter') k('⏎'); if (e.key === 'Backspace') k('C'); };
+  $('#app').innerHTML = `<div class="login"><div class="box"><img src="/static/logo.png" alt="Cajuína Dona Júlia">${telas[passo]}
+    <div class="lfoot"><a href="/cliente">Sou cliente → área do cliente</a></div></div></div>`;
+  const erro = m => { $('#lerr').innerHTML = `<b class="red">${esc(m)}</b>`; $('#lb').disabled = false; };
+  $$('.olho').forEach(b => b.onclick = () => { const i = b.previousElementSibling; i.type = i.type === 'password' ? 'text' : 'password'; });
+  $('#esq') && ($('#esq').onclick = () => telaLogin('esqueci', $('#lu').value));
+  $('#volta') && ($('#volta').onclick = () => telaLogin('entrar', ident0));
+  setTimeout(() => ($('#lu') && !$('#lu').value ? $('#lu') : $('#lp') || $('#lc'))?.focus(), 50);
+  $('#lf').onsubmit = async e => {
+    e.preventDefault(); $('#lb').disabled = true; $('#lerr').innerHTML = '';
+    if (passo === 'entrar') {
+      const u = $('#lu').value.trim(), p = $('#lp').value, chave = await hashTxt(u.toLowerCase() + '|' + p);
+      try {
+        S.me = await api('/api/login', { body: { usuario: u, senha: p } });
+        ls.set(CK + '/api/me', S.me); const c = ls.get('caju_cred', {}); c[chave] = S.me; ls.set('caju_cred', c);
+        ls.set('caju_ultimo_usuario', $('#lr').checked ? u : '');
+        await carregar(); location.hash = ''; render();
+      } catch (er) {
+        if (/conexão/i.test(er.message)) { const me = ls.get('caju_cred', {})[chave], b = ls.get(CK + '/api/base');
+          if (me && b) { S.me = me; S.b = b; ls.set(CK + '/api/me', me); S.credOff = { usuario: u, senha: p }; location.hash = ''; render(); toast('Entrou sem internet — o que fizer será enviado quando a conexão voltar'); return; }
+          return erro('Sem internet. Para entrar offline, você precisa ter entrado antes neste aparelho com internet.'); }
+        erro(er.message);
+      }
+    } else if (passo === 'esqueci') {
+      try {
+        const r = await api('/api/senha/esqueci', { body: { usuario: $('#lu').value.trim() } });
+        const id = $('#lu').value.trim(); telaLogin('codigo', id);
+        $('#onde').innerHTML = r.canais.length ? `Enviamos o código para ${r.canais.map(esc).join(' e ')}.` : r.demo_codigo ? `<b>Modo demonstração:</b> seu código é <b class="codemo">${r.demo_codigo}</b>` : esc(r.aviso || '');
+      } catch (er) { erro(er.message); }
+    } else {
+      try { S.me = await api('/api/senha/redefinir', { body: { usuario: ident0, codigo: $('#lc').value.trim(), senha: $('#lp').value } }); ls.set(CK + '/api/me', S.me); await carregar(); location.hash = ''; render(); ok('Senha criada! Bem-vindo(a).'); }
+      catch (er) { erro(er.message); }
+    }
+  };
+}
+function menuConta() {
+  const m = modal({ title: 'Minha conta', body: `<p><b>${esc(S.me.nome)}</b></p><p class="small mut mb">função: ${esc(S.me.papel)}</p>
+    <details><summary class="b">Trocar minha senha</summary><div class="mt"><label>Senha atual</label><input id="sa" type="password" autocomplete="current-password"><label class="mt">Nova senha (mínimo 6)</label><input id="sn" type="password" autocomplete="new-password"><button class="btn mt" id="ts">Salvar nova senha</button></div></details>`,
+    foot: '<button class="btn ghost" id="sai" style="color:var(--red)">Sair do sistema</button>' });
+  $('#ts', m).onclick = async () => { try { await api('/api/senha/trocar', { body: { atual: $('#sa', m).value, nova: $('#sn', m).value } }); m.close(); ok('Senha alterada'); } catch (e) { err(e); } };
+  $('#sai', m).onclick = async () => { if (fila().length && !confirm('Ainda tem ações feitas sem internet esperando envio. Se sair agora, elas só vão quando alguém entrar de novo neste aparelho. Sair mesmo assim?')) return; m.close(); try { await api('/api/logout', { body: {} }); } catch (e) { } S.me = null; S.credOff = null; limparCache(); location.hash = ''; render(); };
 }
 
 // ---------------------------------------------------------------- painel
@@ -262,15 +303,60 @@ function periodoChips(id, cb, ini = 'mes') {
   cb(P[ini][1], P[ini][2]);
 }
 const hbars = (lst, lab, val, fmt = brl, cor) => { const mx = Math.max(1, ...lst.map(val)); return lst.map(x => `<div class="hb"><span>${esc(lab(x))}</span><div class="m"><i style="width:${val(x) / mx * 100}%${cor ? ';background:' + cor(x) : ''}"></i></div><b class="right">${fmt(val(x))}</b></div>`).join('') || '<p class="mut">Sem dados</p>'; };
+function graficoLucro(ms) {
+  const W = 560, H = 190, z = 100, top = 14, mx = Math.max(1, ...ms.map(m => Math.max(m.vendas, Math.abs(m.lucro)))), sc = v => v / mx * (z - top), bw = W / ms.length;
+  const k = v => Math.abs(v) >= 1000 ? (v / 1000).toFixed(1).replace('.', ',') + 'k' : Math.round(v);
+  const neg = Math.min(0, ...ms.map(m => m.lucro)), hneg = sc(-neg);
+  const HH = Math.max(z + hneg + 34, z + 40);
+  return `<svg viewBox="0 0 ${W} ${HH}" role="img" aria-label="Lucro ou prejuízo por mês">
+    <line x1="0" y1="${z}" x2="${W}" y2="${z}" stroke="var(--dk2)" stroke-width="1.3"/>
+    ${ms.map((m, i) => { const x = i * bw + bw / 2, hv = sc(m.vendas), hl = sc(Math.abs(m.lucro)), cor = m.lucro >= 0 ? '#3E8E2F' : '#D7261E';
+      return `<g><title>${m.mes}: vendas ${brl(m.vendas)} · custos ${brl(m.custos)} · ${m.lucro >= 0 ? 'lucro' : 'prejuízo'} ${brl(m.lucro)}</title>
+      <rect x="${x - 26}" y="${z - hv}" width="24" height="${hv}" rx="3" fill="#F6B400" opacity=".5"/>
+      <rect x="${x + 2}" y="${m.lucro >= 0 ? z - hl : z}" width="24" height="${Math.max(hl, 1)}" rx="3" fill="${cor}"/>
+      <text x="${x + 14}" y="${m.lucro >= 0 ? z - hl - 4 : z + hl + 12}" font-size="11" font-weight="800" text-anchor="middle" fill="${cor}">${k(m.lucro)}</text>
+      <text x="${x}" y="${HH - 6}" font-size="11.5" text-anchor="middle" fill="var(--mut)">${m.mes}${m.parcial ? '*' : ''}</text></g>`; }).join('')}
+  </svg>`;
+}
+function cardEquilibrio(e) {
+  if (!e.configurado) return `<h3 class="mb">Ponto de equilíbrio</h3><p class="mut small mb">Descubra quantas cajuínas precisa vender para pagar o que foi investido. Ex.: produziu 2.000 garrafas gastando R$ 9.000.</p><button class="btn" id="pe-ed">Configurar</button>`;
+  const cx = e.produto.un_caixa || 1, pct = e.precisa ? Math.min(100, e.vendidas / e.precisa * 100) : 0, cxt = n => cx > 1 ? ` <span class="small mut">(${inteiro(Math.ceil(n / cx))} cx)</span>` : '';
+  return `<div class="row"><h3 class="sp">Ponto de equilíbrio</h3><button class="btn sm ghost" id="pe-ed">Ajustar</button></div>
+    <p class="small mut">${esc(e.produto.nome)} · ${inteiro(e.qtd)} un · investimento ${brl(e.invest)} (${brl(e.custo_un)}/un)</p>
+    ${e.pago ? `<big class="grn">✓ Investimento pago!</big><p class="small">E já sobrou <b class="grn">${brl(e.lucro_ate_agora)}</b> de lucro bruto.</p>`
+      : `<big>Faltam ${inteiro(e.faltam)}</big><p class="small">${e.faltam === 1 ? 'unidade' : 'unidades'} para empatar o investimento${cxt(e.faltam)}</p>`}
+    <div class="pb ${e.pago ? 'full' : ''}"><i style="width:${pct}%"></i></div>
+    <div class="small mut mb">${inteiro(e.vendidas)} de ${inteiro(e.precisa)} vendidas desde ${dbr(e.desde)} (${Math.round(pct)}%)</div>
+    <div class="lin"><span>Precisa vender para empatar</span><b>${inteiro(e.precisa)} un${cxt(e.precisa)}</b></div>
+    <div class="lin"><span>Preço ${e.preco_manual ? 'definido' : 'médio real'} de venda</span><b>${brl(e.preco)}/un</b></div>
+    ${!e.cabe ? `<div class="lin red"><span>⚠ A esse preço, nem vendendo todas paga o investimento</span></div>` : ''}
+    <div class="lin"><span>Vendendo todas as ${inteiro(e.qtd)}</span><b class="${e.lucro_tudo >= 0 ? 'grn' : 'red'}">${e.lucro_tudo >= 0 ? 'lucro' : 'prejuízo'} de ${brl(Math.abs(e.lucro_tudo))}</b></div>`;
+}
+async function editarEquilibrio() {
+  const e = await api('/api/equilibrio'), c = S.b.config;
+  const m = modal({ title: 'Ponto de equilíbrio', body: `<p class="small mut mb">Informe quanto foi gasto para produzir um lote de cajuína. O sistema conta as vendas a partir da data de início e mostra quantas faltam para pagar o investimento.</p>
+    ${e.lotes.length ? `<label>Usar um lote produzido (opcional)</label><select id="pl"><option value="">— digitar manualmente —</option>${e.lotes.map(l => `<option value="${l.id}" data-q="${l.qtd}" data-c="${l.custo_total}" data-p="${l.produto_id}" data-d="${l.data_fab}">${esc(l.codigo)} · ${esc(prod(l.produto_id)?.nome || '')} · ${inteiro(l.qtd)} un · custo ${brl(l.custo_total)}</option>`).join('')}</select>` : ''}
+    <div class="g2 mt"><div><label>Produto</label><select id="pp">${S.b.produtos.map(p => `<option value="${p.id}" ${p.id == (c.pe_produto || 1) ? 'selected' : ''}>${esc(p.nome)}</option>`).join('')}</select></div>
+    <div><label>Quantidade produzida (unidades)</label><input id="pq" inputmode="numeric" value="${esc(c.pe_qtd || '2000')}"></div>
+    <div><label>Investimento total (R$)</label><input id="pi" inputmode="decimal" value="${esc((c.pe_invest || '').replace('.', ','))}" placeholder="caju, açúcar, garrafas, rótulos, mão de obra…"></div>
+    <div><label>Contar vendas a partir de</label><input id="pd" type="date" value="${esc(c.pe_desde || S.b.hoje.slice(0, 8) + '01')}"></div>
+    <div><label>Preço de venda por unidade (vazio = média real)</label><input id="pr" inputmode="decimal" value="${esc((c.pe_preco || '').replace('.', ','))}" placeholder="${e.preco_medio ? 'média atual ' + brl(e.preco_medio) : ''}"></div></div>
+    <div class="banner mt" id="sim"></div>`, foot: '<button class="btn" id="ok">Salvar</button>' });
+  const sim = () => { const q = num($('#pq', m).value), inv = num($('#pi', m).value), pr = num($('#pr', m).value) || e.preco_medio || e.preco;
+    $('#sim', m).innerHTML = inv && pr ? `Custo por unidade: <b>${brl(inv / (q || 1))}</b> · Precisa vender <b>${inteiro(Math.ceil(inv / pr))}</b> de ${inteiro(q)} a ${brl(pr)} · Vendendo todas: <b>${brl(q * pr - inv)}</b>` : 'Preencha o investimento para simular.'; };
+  $$('input', m).forEach(i => i.oninput = sim); sim();
+  $('#pl', m) && ($('#pl', m).onchange = e2 => { const o = e2.target.selectedOptions[0]; if (!o.value) return; $('#pq', m).value = o.dataset.q; $('#pi', m).value = String(o.dataset.c).replace('.', ','); $('#pp', m).value = o.dataset.p; $('#pd', m).value = o.dataset.d; sim(); });
+  $('#ok', m).onclick = async () => { try { await api('/api/config', { method: 'PUT', body: { pe_produto: $('#pp', m).value, pe_qtd: String(parseInt($('#pq', m).value) || 0), pe_invest: String(num($('#pi', m).value) || ''), pe_desde: $('#pd', m).value, pe_preco: $('#pr', m).value.trim() ? String(num($('#pr', m).value)) : '' } }); m.close(); await carregar(); render(); ok('Ponto de equilíbrio atualizado'); } catch (er) { err(er); } };
+}
 function telaPainel(main) {
   const h = new Date().getHours(), saud = h < 12 ? 'BOM DIA' : h < 18 ? 'BOA TARDE' : 'BOA NOITE';
   main.innerHTML = `<div class="hero"><div class="t"><small>${saud}, ${esc(S.me.nome.split(' ')[0].toUpperCase())}</small><h1>${esc(cfg('slogan') || 'Sabor que é Piauí!')}</h1><p id="hero-p">Carregando…</p>
     <span class="seal">● ${esc(cfg('selo'))}</span></div><img src="/static/fotos/estande.jpg" alt=""></div>
-    <div class="row wrap mb"><div class="chips" id="per"></div><span class="sp"></span><a class="btn ghost sm" id="csv">⬇ Planilha</a>${pode('pedidos') ? '<a class="btn" href="#pedidos" id="np">+ Novo pedido</a>' : ''}</div>
+    <div class="row wrap mb"><div class="chips" id="per"></div><span class="sp"></span><a class="btn ghost sm" id="csv">⬇ Planilha</a><a class="btn ghost sm" id="pdf" target="_blank">📄 Relatório PDF</a>${pode('pedidos') ? '<a class="btn" href="#pedidos" id="np">+ Novo pedido</a>' : ''}</div>
     <div id="pn"></div>`;
   $('#np') && ($('#np').onclick = e => { e.preventDefault(); location.hash = 'pedidos'; setTimeout(novoPedido, 150); });
   periodoChips('#per', async (de, ate) => {
-    $('#csv').href = `/api/relatorio.csv?de=${de}&ate=${ate}`;
+    $('#csv').href = `/api/relatorio.csv?de=${de}&ate=${ate}`; $('#pdf').href = `/relatorio?de=${de}&ate=${ate}`;
     const p = await api(`/api/painel?de=${de}&ate=${ate}`);
     const garrafas = p.produto.filter(x => /cajuína/i.test(x.nome)).reduce((a, x) => a + x.qtd, 0);
     $('#hero-p').textContent = `${dbr(de)} a ${dbr(ate)}: ${inteiro(garrafas)} garrafas vendidas, ${p.a_entregar} pedido(s) para entregar e ${brl(p.receber.total)} a receber.`;
@@ -280,7 +366,13 @@ function telaPainel(main) {
       <div class="kpi k"><small>Pedidos · ticket médio</small><b>${p.pedidos}</b><em>${brl(p.ticket)} por pedido</em></div>
       <div class="kpi k"><small>Unidades vendidas</small><b>${inteiro(p.unidades)}</b><em>garrafas e potes</em></div>
       <div class="kpi g"><small>Margem bruta</small><b>${p.vendas ? Math.round((1 - p.cmv / p.vendas) * 100) : 0}%</b><em>custo dos produtos ${brl(p.cmv)}</em></div>
-      <div class="kpi r"><small>A receber (total)</small><b class="red">${brl(p.receber.total)}</b><em class="red">${brl(p.receber.vencido)} vencido · ${p.receber.n_vencidos} pedido(s)</em></div></div>
+      <div class="kpi r"><small>A receber (total)</small><b class="red">${brl(p.receber.total)}</b><em class="red">${brl(p.receber.vencido)} vencido · ${p.receber.n_vencidos} pendência(s)</em></div></div>
+      ${p.meses ? `<div class="res"><div class="card"><div class="row"><h3 class="sp">Lucro ou prejuízo</h3><span class="small mut">${dbr(de)} a ${dbr(ate)}</span></div>
+        <div class="dre3"><div><small>Vendas</small><b>${brl(p.resultado.vendas)}</b></div><div><small>Custos</small><b>${brl(p.resultado.custos)}</b></div>
+        <div class="${p.resultado.lucro >= 0 ? 'lp' : 'lr'}"><small>${p.resultado.lucro >= 0 ? 'Lucro' : 'Prejuízo'}</small><b>${brl(p.resultado.lucro)}</b></div></div>
+        <div class="gl">${graficoLucro(p.meses)}</div>
+        <div class="leg"><span><i style="background:#F6B40088"></i>vendas</span><span><i style="background:#3E8E2F"></i>lucro</span><span><i style="background:#D7261E"></i>prejuízo</span><span>· custos = produto vendido + perdas + contas do mês · * mês em andamento</span></div></div>
+        <div class="card pe" id="pe">${cardEquilibrio(p.equilibrio)}</div></div>` : ''}
       <div class="g3 gA">
        <div class="card"><h3 class="mb">Vendas por dia</h3><div class="bars">${p.dia.map(x => `<i style="height:${x.total / mxd * 100}%" title="${dm(x.dia)} · ${brl(x.total)}"></i>`).join('')}</div>
          <h3 class="mb mt">Por canal</h3>${hbars(p.canal, x => S.b.canais[x.canal] || x.canal, x => x.total)}</div>
@@ -289,6 +381,7 @@ function telaPainel(main) {
        <div class="card"><h3 class="mb">Melhores clientes</h3>${hbars(p.clientes, x => x.nome, x => x.total)}
          <h3 class="mb mt">Por rota</h3>${hbars(p.rota, x => x.nome, x => x.total)}
          <h3 class="mb mt">Por produto</h3>${hbars(p.produto, x => x.nome, x => x.qtd, v => inteiro(v) + ' un')}</div></div>`;
+    $('#pe-ed') && ($('#pe-ed').onclick = editarEquilibrio);
   });
 }
 
@@ -367,7 +460,7 @@ function entregar(p, aposOk) {
     $('#ok', m).disabled = true;
     try {
       const r = await api(`/api/pedidos/${p.id}/status`, { body: { status: 'entregue', canhoto: foto, recebido_por: $('#rpor', m).value.trim(), sem_comprovante: $('#semm', m)?.value.trim() || '', receber: $('#rec', m)?.checked, forma } });
-      m.close(); r._offline ? toast('📴 Sem internet: entrega e foto salvas no aparelho, vão sozinhas quando a conexão voltar') : ok('Entrega confirmada'); aposOk ? aposOk() : render();
+      m.close(); r._offline ? toast('Sem internet: entrega e foto salvas no aparelho, vão sozinhas quando a conexão voltar') : ok('Entrega confirmada'); aposOk ? aposOk() : render();
     } catch (e) { err(e); libera(); }
   };
 }
@@ -376,7 +469,7 @@ function anexarComprovante(p) {
     <label class="mt">Nome de quem recebeu</label><input id="rpor" value="${esc(p.recebido_por || '')}">`, foot: '<button class="btn g" id="ok" disabled>Salvar comprovante</button>' });
   let foto = '';
   $('#ft', m).onchange = async e => { if (!e.target.files[0]) return; foto = await reduzir(e.target.files[0], 1500, .62); $('#prev', m).src = foto; $('#prev', m).style.display = 'block'; $('#fb', m).classList.add('ok'); $('#ok', m).disabled = false; };
-  $('#ok', m).onclick = async () => { try { const r = await api(`/api/pedidos/${p.id}/comprovante`, { body: { foto, recebido_por: $('#rpor', m).value.trim() } }); m.close(); r._offline ? toast('📴 Foto salva no aparelho, envia quando voltar a internet') : ok('Comprovante salvo'); if (!r._offline) detalhePedido(p.id); } catch (e) { err(e); } };
+  $('#ok', m).onclick = async () => { try { const r = await api(`/api/pedidos/${p.id}/comprovante`, { body: { foto, recebido_por: $('#rpor', m).value.trim() } }); m.close(); r._offline ? toast('Sem internet: foto salva no aparelho, envia quando voltar a internet') : ok('Comprovante salvo'); if (!r._offline) detalhePedido(p.id); } catch (e) { err(e); } };
 }
 function reduzir(arq, max = 900, q = .7) {
   return new Promise((res, rej) => { const fr = new FileReader(), img = new Image(); fr.onload = () => img.src = fr.result; img.onload = () => { const s = Math.min(1, max / Math.max(img.width, img.height)); const cv = document.createElement('canvas'); cv.width = img.width * s; cv.height = img.height * s; cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); res(cv.toDataURL('image/jpeg', q)); }; img.onerror = rej; fr.readAsDataURL(arq); });
@@ -460,9 +553,12 @@ async function novoPedido(clienteId, ed) {
     }
     $('#tb', m).value = st.tabela_id;
     $('#cinfo', m).innerHTML = c ? `${c.tipo === 'revenda' ? '<span class="pill p-rev">REVENDEDOR</span>' : '<span class="pill p-enc">consumidor</span>'} ${esc(c.cidade)} · rota <b>${esc(c.rota || '—')}</b> · prazo <b>${c.prazo_dias || 0} dias</b>
-      ${c.aberto > 0 ? ` · em aberto <b class="${c.vencido > 0 ? 'red' : ''}">${brl(c.aberto)}</b>${c.limite ? ` de ${brl(c.limite)}` : ''}` : ''}`
+      ${c.limite ? ` · limite ${brl(c.limite)}` : ''}
+      ${c.aberto > 0.009 ? `<div class="devendo">⚠ Este cliente já deve <b>${brl(c.aberto)}</b>${c.pendencias ? ` (inclui ${brl(c.pendencias)} em pendências)` : ''}${c.vencido > 0 ? ` · <b>${brl(c.vencido)} vencido</b>` : ''}.</div>` : ''}
+      ${pode('financeiro') || pode('clientes') ? `<button class="btn sm ghost mt" id="addpend">+ Lançar pendência / saldo devedor</button>` : ''}`
       : st.nome_novo ? `<div class="novocli"><span class="pill p-ok">CLIENTE NOVO</span> <b>${esc(st.nome_novo)}</b> será cadastrado junto com o pedido.<div class="g2 mt"><input id="ntel" inputmode="tel" placeholder="WhatsApp (opcional)" value="${esc(st.tel_novo || '')}"><input id="ncid" placeholder="Cidade (opcional)" value="${esc(st.cid_novo || '')}"></div></div>`
       : '<span class="mut">Venda sem cliente (balcão / fazenda)</span>';
+    $('#addpend', m) && ($('#addpend', m).onclick = () => novaPendencia(c, async () => { const nv = (await api('/api/clientes')).find(x => x.id === c.id); if (nv) { Object.assign(c, nv); setCli(c); } }));
     $('#ntel', m) && ($('#ntel', m).oninput = e => st.tel_novo = e.target.value);
     $('#ncid', m) && ($('#ncid', m).oninput = e => st.cid_novo = e.target.value);
     drawProds(); drawRes();
@@ -506,7 +602,9 @@ async function novoPedido(clienteId, ed) {
       <label class="mt">Pagamento</label><div class="seg" id="cd"><button data-c="vista" class="${st.condicao === 'vista' ? 'on' : ''}">À vista</button><button data-c="prazo" class="${st.condicao === 'prazo' ? 'on' : ''}">A prazo</button></div>
       ${st.condicao === 'prazo' ? `<div class="l mt"><span>Prazo (dias)</span><input id="pz" style="width:70px;text-align:right;padding:4px 6px" value="${st.prazo}"></div>` : ''}
       <div class="chips mt" id="fm">${['pix', 'dinheiro', 'boleto', 'credito', 'transferencia'].map(f => `<button data-f="${f}" class="${f === st.forma ? 'on' : ''}" style="padding:5px 10px;font-size:12px">${FORMAS[f]}</button>`).join('')}</div>
-      ${st.condicao === 'vista' ? `<label class="mt" style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="pg" style="width:auto"> Já recebi o pagamento</label>` : ''}
+      ${st.condicao === 'vista' ? `<label class="mt" style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="pg" style="width:auto" ${st.pago ? 'checked' : ''}> Já recebi o pagamento</label>
+        ${st.pago ? `<div class="l"><span>Valor recebido agora</span><input id="vp" inputmode="decimal" style="width:110px;text-align:right;padding:4px 6px" value="${(st.vp ?? total()).toFixed(2).replace('.', ',')}"></div>
+        ${st.vp != null && st.vp < total() - 0.009 ? `<div class="devendo">Cliente fica devendo <b>${brl(total() - st.vp)}</b> deste pedido${cli() ? '' : ' — <b>escolha ou cadastre o cliente</b> para registrar a dívida'}.</div>` : ''}` : ''}` : ''}
       <button class="btn lg full mt" id="ok" ${linhas.length ? '' : 'disabled'}>Criar pedido · ${brl(total())}</button>`}`;
     const nIt = linhas.reduce((a, [, q]) => a + q, 0);
     $('#npb', m).innerHTML = nIt ? `<span><small>${inteiro(nIt)} un</small><b>${brl(total())}</b></span><button class="btn k" id="vres">Revisar e ${ed ? 'salvar' : 'fechar'} ↓</button>` : '';
@@ -515,6 +613,8 @@ async function novoPedido(clienteId, ed) {
     $('#fr', m).onchange = e => { st.frete = num(e.target.value); drawRes(); };
     $('#ds', m).onchange = e => { st.desconto = num(e.target.value); drawRes(); };
     $('#pz', m) && ($('#pz', m).onchange = e => st.prazo = parseInt(e.target.value) || 0);
+    $('#pg', m) && ($('#pg', m).onchange = e => { st.pago = e.target.checked; st.vp = null; drawRes(); });
+    $('#vp', m) && ($('#vp', m).onchange = e => { st.vp = Math.min(total(), Math.max(0, num(e.target.value))); drawRes(); });
     $('#cd', m) && ($('#cd', m).onclick = e => { const b = e.target.closest('[data-c]'); if (b) { st.condicao = b.dataset.c; if (st.condicao === 'prazo' && !st.prazo) st.prazo = 14; drawRes(); } });
     $('#fm', m) && ($('#fm', m).onclick = e => { const b = e.target.closest('[data-f]'); if (b) { st.forma = b.dataset.f; drawRes(); } });
     $('#ok', m).onclick = salvar;
@@ -530,15 +630,15 @@ async function novoPedido(clienteId, ed) {
     try {
       if (ed) {
         const p = await api(`/api/pedidos/${ed.id}/itens`, { method: 'PUT', body: { itens: itensBody(), frete: frete(), desconto: st.desconto, obs: $('#obs', m).value, data_entrega: $('#de', m).value } });
-        if (p._offline) { m.close(); toast('📴 Sem internet: alteração salva no aparelho, vai ser enviada sozinha'); render(); return; }
+        if (p._offline) { m.close(); toast('Sem internet: alteração salva no aparelho, vai ser enviada sozinha'); render(); return; }
         m.close(); ok(`Pedido #${p.numero} atualizado`); await carregar(); render(); setTimeout(() => detalhePedido(p.id), 250); return;
       }
       const p = await api('/api/pedidos', { body: { cliente_id: st.cliente_id || null, tabela_id: st.tabela_id, rota_id: st.rota_id || null, frete: frete(), desconto: st.desconto,
-        condicao: st.condicao, prazo_dias: st.prazo, forma: st.forma, pago_agora: $('#pg', m)?.checked, obs: $('#obs', m).value, data_entrega: $('#de', m).value,
+        condicao: st.condicao, prazo_dias: st.prazo, forma: st.forma, pago_agora: st.condicao === 'vista' && !!st.pago, valor_pago: st.pago && st.vp != null ? st.vp : null, obs: $('#obs', m).value, data_entrega: $('#de', m).value,
         cliente_nome: !st.cliente_id ? st.nome_novo || '' : '', cliente_tel: st.tel_novo || '', cliente_cidade: st.cid_novo || '',
         canal: cli() ? (cli().tipo === 'revenda' ? 'revenda' : 'encomenda') : st.nome_novo ? 'encomenda' : 'balcao', itens: itensBody() },
         resumo: { cliente: cli()?.nome || st.nome_novo || 'Balcão', total: total(), itens: Object.entries(st.itens).filter(([, q]) => q > 0).map(([pid, q]) => `${qtdTxt(pid, q)} ${prod(pid).nome}`) } });
-      if (p._offline) { m.close(); toast('📴 Sem internet: pedido salvo no aparelho. Ele entra no sistema sozinho quando a conexão voltar.'); render(); return; }
+      if (p._offline) { m.close(); toast('Sem internet: pedido salvo no aparelho. Ele entra no sistema sozinho quando a conexão voltar.'); render(); return; }
       m.close(); ok(`Pedido #${p.numero} criado`); await carregar(); render(); setTimeout(() => detalhePedido(p.id), 250);
     } catch (e) { err(e); b.disabled = false; }
   };
@@ -695,17 +795,40 @@ async function telaClientes(main) {
   $('#cc').onclick = e => { const r = e.target.closest('[data-c]'); if (r) fichaCliente(cs.find(c => c.id == r.dataset.c)); };
   draw();
 }
+function receberDebito(x, depois) {
+  const m = modal({ title: 'Receber pendência', body: `<p class="mb"><b>${esc(x.descricao)}</b> · em aberto ${brl(x.aberto)}</p><div class="g2"><div><label>Valor recebido</label><input id="v" inputmode="decimal" value="${x.aberto.toFixed(2).replace('.', ',')}"></div>
+    <div><label>Forma</label><select id="f">${['pix', 'dinheiro', 'transferencia', 'credito', 'debito', 'boleto'].map(f => `<option value="${f}">${FORMAS[f] || f}</option>`).join('')}</select></div></div>`, foot: '<button class="btn g" id="ok">Confirmar recebimento</button>' });
+  $('#ok', m).onclick = async () => { try { const r = await api(`/api/debitos/${x.id}/receber`, { body: { valor: num($('#v', m).value), forma: $('#f', m).value } }); m.close(); ok(r._offline ? 'Sem internet: recebimento salvo, envia quando voltar' : 'Recebido'); depois && depois(); } catch (e) { err(e); } };
+}
+function novaPendencia(c, depois) {
+  const m = modal({ title: `Pendência · ${esc(c.nome)}`, body: `<p class="small mut mb">Lance uma dívida antiga, um saldo devedor ou qualquer valor que o cliente deva fora dos pedidos. Ela entra no "em aberto", no limite de crédito e na cobrança.</p>
+    <label>Descrição</label><input id="d" placeholder="ex.: Saldo anterior ao sistema · garrafas não devolvidas">
+    <div class="g2 mt"><div><label>Valor (R$)</label><input id="v" inputmode="decimal"></div><div><label>Vencimento</label><input id="ve" type="date" value="${S.b.hoje}"></div></div>`, foot: '<button class="btn" id="ok">Lançar pendência</button>' });
+  setTimeout(() => $('#d', m).focus(), 60);
+  $('#ok', m).onclick = async () => { try { await api(`/api/clientes/${c.id}/debitos`, { body: { descricao: $('#d', m).value || 'Saldo devedor', valor: num($('#v', m).value), vencimento: $('#ve', m).value } }); m.close(); ok('Pendência lançada'); depois && depois(); } catch (e) { err(e); } };
+}
 async function fichaCliente(c) {
   const ps = await api('/api/pedidos?cliente_id=' + c.id);
   const m = modal({
     title: esc(c.nome), wide: true, body: `<div class="g3 mb"><div><label>Contato</label>${esc(c.contato || '')} ${tel(c.telefone)}<br><span class="small mut">${esc(c.endereco)} · ${esc(c.bairro)} · ${esc(c.cidade)}</span></div>
       <div><label>Condições</label>Tabela <b>${esc(c.tabela || '')}</b> · rota <b>${esc(c.rota || '—')}</b><br>Prazo ${c.prazo_dias || 0} dias · limite ${c.limite ? brl(c.limite) : '—'}</div>
-      <div><label>Situação</label><b class="${c.vencido > 0 ? 'red' : ''}">${c.aberto > 0 ? brl(c.aberto) + ' em aberto' : 'Nada em aberto'}</b><br><span class="small mut">${c.n_pedidos} pedidos · ${brl(c.total_ano)} no ano</span></div></div>
+      <div><label>Situação</label><b class="${c.vencido > 0 ? 'red' : ''}">${c.aberto > 0 ? brl(c.aberto) + ' em aberto' : 'Nada em aberto'}</b><br><span class="small mut">${c.pendencias ? `inclui ${brl(c.pendencias)} de pendências · ` : ''}${c.n_pedidos} pedidos · ${brl(c.total_ano)} no ano</span></div></div>
+      <div id="pds"></div>
       <table><tr><th>Pedido</th><th>Data</th><th>Itens</th><th>Status</th><th class="n">Total</th><th>Pagamento</th></tr>${ps.slice(0, 15).map(p => `<tr class="click" data-p="${p.id}"><td>#${p.numero}</td><td>${dbr(p.criado_em)}</td><td class="small">${p.itens.map(i => i.qtd + '× ' + esc(i.descricao)).join(', ')}</td><td>${STATUS[p.status]}</td><td class="n">${brl(p.total)}</td><td>${pagPill(p)}</td></tr>`).join('')}</table>`,
     foot: `<button class="btn ghost" id="ed">Editar cadastro</button><button class="btn ghost" id="cod">🔑 Acesso à área do cliente</button><span class="sp"></span>${c.aberto > 0 && pode('financeiro') ? '<button class="btn ghost" id="cob" style="color:var(--red)">Cobrar no WhatsApp</button>' : ''}<button class="btn" id="np">+ Pedido</button>`
   });
   $('#ed', m).onclick = () => { m.close(); editarCliente(c); };
   $('#np', m).onclick = () => { m.close(); location.hash = 'pedidos'; setTimeout(() => novoPedido(c.id), 200); };
+  const pend = async () => {
+    const ds = await api(`/api/clientes/${c.id}/debitos`).catch(() => []);
+    $('#pds', m).innerHTML = `<div class="card mb" style="box-shadow:none;background:var(--tint)"><div class="row"><h3 class="sp">Pendências / saldo devedor</h3>${pode('financeiro') || pode('clientes') ? '<button class="btn sm" id="npd">+ Lançar pendência</button>' : ''}</div>
+      ${ds.map(x => `<div class="pend-l"><div class="sp"><b>${esc(x.descricao)}</b><div class="small mut">vence ${dbr(x.vencimento)} · lançado por ${esc(x.criado_por)}${x.pago ? ` · já pago ${brl(x.pago)}` : ''}</div></div><b class="${x.vencimento < S.b.hoje ? 'red' : ''}">${brl(x.aberto)}</b>
+        ${pode('financeiro') ? `<button class="btn sm g" data-rd="${x.id}">Receber</button>${!x.pago ? `<button class="btn sm ghost" data-xd="${x.id}" title="Apagar">✕</button>` : ''}` : ''}</div>`).join('') || '<p class="small mut">Nenhuma pendência fora dos pedidos.</p>'}</div>`;
+    $('#npd', m) && ($('#npd', m).onclick = () => novaPendencia(c, pend));
+    $$('[data-rd]', m).forEach(b => b.onclick = () => { const x = ds.find(d => d.id == b.dataset.rd); receberDebito(x, pend); });
+    $$('[data-xd]', m).forEach(b => b.onclick = async () => { if (!confirm('Apagar esta pendência?')) return; try { await api('/api/debitos/' + b.dataset.xd, { method: 'DELETE' }); pend(); } catch (e) { err(e); } });
+  };
+  pend();
   $('#cob', m) && ($('#cob', m).onclick = async () => { const r = await api(`/api/clientes/${c.id}/whatsapp-cobranca`, { body: {} }); window.open(r.link, '_blank'); });
   $('#cod', m).onclick = async () => { const r = await api(`/api/c/codigo-equipe/${c.id}`, { body: {} }); window.open(r.link, '_blank'); };
   $('.mc', m).onclick = e => { const r = e.target.closest('[data-p]'); if (r) detalhePedido(+r.dataset.p); };
@@ -842,14 +965,15 @@ function telaFeira(main) {
 // ---------------------------------------------------------------- financeiro
 function telaFinanceiro(main) {
   let aba = telaFinanceiro.aba || 'receber';
-  main.innerHTML = `<div class="row wrap mb"><h2 class="sp">Financeiro</h2><div class="chips" id="per"></div></div>
+  main.innerHTML = `<div class="row wrap mb"><h2 class="sp">Financeiro</h2><div class="chips" id="per"></div><a class="btn ghost sm" id="pdf" target="_blank">📄 Relatório PDF</a></div>
     <div class="tabs" id="tb">${[['receber', 'Contas a receber'], ['pagar', 'Contas a pagar'], ['resultado', 'Resultado']].map(([k, n]) => `<button data-a="${k}" class="${k === aba ? 'on' : ''}">${n}</button>`).join('')}</div><div id="fn"></div>`;
   let D = null;
   const draw = () => {
     const el = $('#fn');
     if (aba === 'receber') {
       const venc = D.receber.filter(r => r.dias > 0), av = D.receber.filter(r => r.dias <= 0);
-      const linha = r => `<tr class="click" data-p="${r.id}"><td><b>${esc(r.cliente || 'Sem cliente')}</b><div class="small mut">pedido #${r.numero} · ${dbr(r.criado_em)}</div></td><td class="${r.dias > 0 ? 'red b' : ''}">${dbr(r.vencimento)}${r.dias > 0 ? `<div class="small">há ${r.dias} dias</div>` : r.dias === 0 ? '<div class="small">hoje</div>' : `<div class="small mut">em ${-r.dias} dias</div>`}</td><td class="n b">${brl(r.aberto)}</td>
+      const linha = r => r.tipo === 'pendencia' ? `<tr><td><b>${esc(r.cliente)}</b><div class="small mut"><span class="pill p-warn">pendência</span> ${esc(r.descricao)}</div></td><td class="${r.dias > 0 ? 'red b' : ''}">${dbr(r.vencimento)}${r.dias > 0 ? `<div class="small">há ${r.dias} dias</div>` : ''}</td><td class="n b">${brl(r.aberto)}</td>
+        <td class="n"><button class="btn sm g" data-rdeb="${r.debito_id}" data-v="${r.aberto}" data-d="${esc(r.descricao)}">Receber</button></td></tr>` : `<tr class="click" data-p="${r.id}"><td><b>${esc(r.cliente || 'Sem cliente')}</b><div class="small mut">pedido #${r.numero} · ${dbr(r.criado_em)}</div></td><td class="${r.dias > 0 ? 'red b' : ''}">${dbr(r.vencimento)}${r.dias > 0 ? `<div class="small">há ${r.dias} dias</div>` : r.dias === 0 ? '<div class="small">hoje</div>' : `<div class="small mut">em ${-r.dias} dias</div>`}</td><td class="n b">${brl(r.aberto)}</td>
         <td class="n">${r.telefone ? `<button class="btn sm ghost" data-cob="${r.id}" style="color:var(--red)">Cobrar</button> ` : ''}<button class="btn sm g" data-rec="${r.id}">Receber</button></td></tr>`;
       el.innerHTML = `<div class="kpis"><div class="kpi r"><small>Vencido</small><b class="red">${brl(venc.reduce((a, r) => a + r.aberto, 0))}</b><em>${venc.length} título(s)</em></div><div class="kpi"><small>A vencer</small><b>${brl(av.reduce((a, r) => a + r.aberto, 0))}</b><em>${av.length} título(s)</em></div><div class="kpi g"><small>Recebido no período</small><b>${brl(D.recebido)}</b></div></div>
         <div class="card"><table class="resp"><tr><th>Cliente</th><th>Vencimento</th><th class="n">Valor</th><th></th></tr>${venc.concat(av).map(linha).join('')}</table>${D.receber.length ? '' : '<div class="empty">Nada a receber 🎉</div>'}</div>`;
@@ -865,11 +989,12 @@ function telaFinanceiro(main) {
         <div class="card"><h3 class="mb">Recebido por forma</h3>${hbars(D.formas, x => FORMAS[x.forma] || x.forma, x => x.total)}</div></div>`;
     }
   };
-  const load = async (de, ate) => { if (de) { load.de = de; load.ate = ate; } D = await api(`/api/financeiro?de=${load.de}&ate=${load.ate}`); draw(); };
+  const load = async (de, ate) => { if (de) { load.de = de; load.ate = ate; } $('#pdf').href = `/relatorio?de=${load.de}&ate=${load.ate}`; D = await api(`/api/financeiro?de=${load.de}&ate=${load.ate}`); draw(); };
   $('#tb').onclick = e => { const b = e.target.closest('[data-a]'); if (!b) return; aba = telaFinanceiro.aba = b.dataset.a; $$('#tb button').forEach(x => x.classList.toggle('on', x === b)); draw(); };
   main.addEventListener('click', async e => {
     const rec = e.target.closest('[data-rec]'), cob = e.target.closest('[data-cob]'), pg = e.target.closest('[data-pg]'), df = e.target.closest('[data-desf]'), p = e.target.closest('[data-p]');
     if (rec) { e.stopPropagation(); return receberModal(await api('/api/pedidos/' + rec.dataset.rec), () => load()); }
+    const rd = e.target.closest('[data-rdeb]'); if (rd) return receberDebito({ id: +rd.dataset.rdeb, aberto: +rd.dataset.v, descricao: rd.dataset.d }, () => load());
     if (cob) { e.stopPropagation(); const r = await api(`/api/pedidos/${cob.dataset.cob}/whatsapp?tipo=cobranca`); return window.open(r.link, '_blank'); }
     if (pg || df) { await api(`/api/contas/${(pg || df).dataset.pg || df.dataset.desf}/pagar`, { body: { desfazer: !!df } }); return load(); }
     if (e.target.id === 'nc') { const m = modal({ title: 'Nova conta a pagar', body: `<label>Descrição</label><input id="d"><div class="g3 mt"><div><label>Categoria</label><input id="c" list="cats" value="Outros"><datalist id="cats">${['Funcionários', 'Energia', 'Logística', 'Administrativo', 'Manutenção', 'Matéria-prima', 'Embalagens', 'Eventos', 'Impostos', 'Outros'].map(x => `<option value="${x}">`).join('')}</datalist></div><div><label>Valor</label><input id="v"></div><div><label>Vencimento</label><input type="date" id="ve" value="${S.b.hoje}"></div></div>`, foot: '<button class="btn" id="ok">Salvar</button>' });
@@ -884,7 +1009,7 @@ async function telaEquipe(main) {
   await carregar();
   main.innerHTML = `<div class="row mb"><h2 class="sp">Equipe e permissões</h2><button class="btn" id="nu">+ Pessoa</button></div>
     <div class="card mb"><table class="resp"><tr><th>Pessoa</th><th>Função</th><th>Pode</th><th class="n">Desconto máx.</th><th></th></tr>
-    ${S.b.usuarios.map(u => { const ps = JSON.parse(u.permissoes || '[]'); return `<tr><td><b>${esc(u.nome)}</b>${!u.ativo ? ' <span class="pill p-off">inativo</span>' : ''}</td><td>${esc(u.papel)}</td><td class="small">${ps.length === Object.keys(S.b.permissoes).length ? '<b>tudo</b>' : ps.map(p => esc(S.b.permissoes[p])).join(' · ')}</td><td class="n">${u.desconto_max ? u.desconto_max + '%' : '—'}</td><td class="n"><button class="btn sm ghost" data-u="${u.id}">Editar</button></td></tr>`; }).join('')}</table></div>
+    ${S.b.usuarios.map(u => { const ps = JSON.parse(u.permissoes || '[]'); return `<tr><td><b>${esc(u.nome)}</b>${!u.ativo ? ' <span class="pill p-off">inativo</span>' : ''}<div class="small mut">usuário <b>${esc(u.login || '—')}</b>${u.email ? ' · ' + esc(u.email) : ''}</div></td><td>${esc(u.papel)}</td><td class="small">${ps.length === Object.keys(S.b.permissoes).length ? '<b>tudo</b>' : ps.map(p => esc(S.b.permissoes[p])).join(' · ')}</td><td class="n">${u.desconto_max ? u.desconto_max + '%' : '—'}</td><td class="n"><button class="btn sm ghost" data-u="${u.id}">Editar</button></td></tr>`; }).join('')}</table></div>
     <div class="card"><h3 class="mb">Histórico de ações</h3><div id="log" class="small"></div></div>`;
   const log = await api('/api/log');
   $('#log').innerHTML = `<table>${log.slice(0, 80).map(l => `<tr><td>${dbr(l.criado_em)} ${hm(l.criado_em)}</td><td><b>${esc(l.usuario)}</b></td><td>${esc(l.acao)}</td><td class="mut">${esc(l.detalhe)}</td></tr>`).join('')}</table>`;
@@ -892,15 +1017,30 @@ async function telaEquipe(main) {
 }
 function editarUsuario(u) {
   const ps = new Set(JSON.parse(u.permissoes || '[]'));
-  const m = modal({ title: u.id ? 'Editar pessoa' : 'Nova pessoa', wide: true, body: `<div class="g3"><div><label>Nome</label><input id="n" value="${esc(u.nome || '')}"></div><div><label>PIN (4+ números)</label><input id="pin" inputmode="numeric" value="${esc(u.pin || '')}"></div>
-    <div><label>Função (preenche as permissões)</label><select id="pp">${Object.keys(S.b.papeis).map(p => `<option ${p === u.papel ? 'selected' : ''}>${p}</option>`).join('')}</select></div></div>
+  const m = modal({ title: u.id ? 'Editar pessoa' : 'Nova pessoa', wide: true, body: `<div class="g3"><div><label>Nome</label><input id="n" value="${esc(u.nome || '')}"></div>
+    <div><label>Função (preenche as permissões)</label><select id="pp">${Object.keys(S.b.papeis).map(p => `<option ${p === u.papel ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
+    <div><label>WhatsApp</label><input id="tl" inputmode="tel" value="${esc(u.telefone || '')}" placeholder="(86) 9…"></div></div>
+    <h3 class="mt mb" style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:var(--mut)">Acesso ao sistema</h3>
+    <div class="g3"><div><label>Usuário (login)</label><input id="lg" autocapitalize="none" value="${esc(u.login || '')}" placeholder="ex.: ana"></div>
+    <div><label>E-mail</label><input id="em" type="email" value="${esc(u.email || '')}" placeholder="para recuperar a senha"></div>
+    <div><label>CPF (opcional)</label><input id="cpf" inputmode="numeric" value="${esc(u.cpf || '')}"></div></div>
+    <div class="g2 mt"><div><label>${u.id ? 'Nova senha (deixe vazio para manter)' : 'Senha inicial (mínimo 6)'}</label><input id="sh" type="text" autocomplete="off" placeholder="${u.id ? '••••••' : ''}"></div>
+    <div>${u.id ? `<label>Primeiro acesso / esqueceu</label><button class="btn ghost full" id="gc">🔑 Gerar código de acesso</button>` : ''}</div></div>
     <label class="mt">O que esta pessoa pode fazer</label><div class="perm" id="perm">${Object.entries(S.b.permissoes).map(([k, n]) => `<label><input type="checkbox" value="${k}" ${ps.has(k) ? 'checked' : ''}> ${esc(n)}</label>`).join('')}</div>
-    <div class="g3 mt"><div><label>Desconto máximo sem autorização (%)</label><input id="dm" value="${u.desconto_max || 0}"></div><div><label>Comissão (%)</label><input id="cm" value="${u.comissao || 0}"></div><div><label>Telefone</label><input id="tl" value="${esc(u.telefone || '')}"></div></div>`,
-    foot: `${u.id ? `<label style="display:flex;gap:6px;align-items:center;margin:0;color:var(--ink)"><input type="checkbox" id="at" style="width:auto" ${u.ativo ? 'checked' : ''}> Ativo</label>` : ''}<span class="sp"></span><button class="btn" id="ok">Salvar</button>` });
+    <div class="g2 mt"><div><label>Desconto máximo sem autorização (%)</label><input id="dm" value="${u.desconto_max || 0}"></div><div><label>Comissão (%)</label><input id="cm" value="${u.comissao || 0}"></div></div>`,
+    foot: `${u.id ? `<label style="display:flex;gap:6px;align-items:center;margin:0;color:var(--ink);text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="at" style="width:auto" ${u.ativo ? 'checked' : ''}> Ativo</label>` : ''}<span class="sp"></span><button class="btn" id="ok">Salvar</button>` });
   $('#pp', m).onchange = e => { const l = S.b.papeis[e.target.value]; $$('#perm input', m).forEach(i => i.checked = l.includes(i.value)); };
+  $('#gc', m) && ($('#gc', m).onclick = async () => {
+    try { const r = await api(`/api/equipe/${u.id}/codigo`, { body: {} });
+      modal({ title: 'Código de acesso', body: `<p>Passe para <b>${esc(u.nome)}</b>:</p><p class="mt">Usuário: <b>${esc(r.login)}</b></p><p style="font-size:34px;font-weight:900;letter-spacing:8px;margin:8px 0">${r.codigo}</p><p class="small mut">Vale 20 minutos. Na tela de entrada: <b>Esqueci minha senha</b> → digita o usuário → usa este código e cria a senha.</p>`,
+        foot: r.whatsapp ? `<a class="btn g" href="${r.whatsapp}" target="_blank">Enviar pelo WhatsApp</a>` : '' });
+    } catch (e) { err(e); } });
   $('#ok', m).onclick = async () => {
-    try { await api('/api/cad/usuarios' + (u.id ? '/' + u.id : ''), { method: u.id ? 'PUT' : 'POST', body: { nome: $('#n', m).value, pin: $('#pin', m).value, papel: $('#pp', m).value, permissoes: $$('#perm input:checked', m).map(i => i.value), desconto_max: num($('#dm', m).value), comissao: num($('#cm', m).value), telefone: $('#tl', m).value, ativo: $('#at', m) ? ($('#at', m).checked ? 1 : 0) : 1 } });
-      m.close(); ok('Salvo. Vale a partir do próximo login da pessoa.'); render(); } catch (e) { err(e); }
+    const body = { nome: $('#n', m).value, login: $('#lg', m).value.trim(), email: $('#em', m).value.trim(), cpf: $('#cpf', m).value, papel: $('#pp', m).value,
+      permissoes: $$('#perm input:checked', m).map(i => i.value), desconto_max: num($('#dm', m).value), comissao: num($('#cm', m).value), telefone: $('#tl', m).value, ativo: $('#at', m) ? ($('#at', m).checked ? 1 : 0) : 1 };
+    if ($('#sh', m).value) body.senha = $('#sh', m).value;
+    try { await api('/api/cad/usuarios' + (u.id ? '/' + u.id : ''), { method: u.id ? 'PUT' : 'POST', body });
+      m.close(); ok('Salvo. Permissões valem a partir do próximo login da pessoa.'); render(); } catch (e) { err(e); }
   };
 }
 

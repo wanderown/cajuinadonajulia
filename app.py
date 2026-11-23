@@ -5,9 +5,10 @@ Produção por lote, estoque com validade, pedidos e encomendas, revendedores a 
 rotas de entrega, feira, financeiro, equipe com permissões e área do cliente.
 Roda na nuvem (Railway) com SQLite num volume. Acesso pelo navegador do PC ou do celular.
 """
-import os, sys, json, sqlite3, uuid, secrets, time, threading, random, csv, io, hashlib
+import os, sys, json, sqlite3, uuid, secrets, time, threading, random, csv, io, hashlib, re, unicodedata, smtplib
 from datetime import datetime, timedelta, date
 from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash
 from flask import Flask, request, jsonify, session, g, send_from_directory, render_template, Response, abort, redirect
 
 import integracoes as I
@@ -120,6 +121,9 @@ CREATE TABLE IF NOT EXISTS contas_pagar (id INTEGER PRIMARY KEY, descricao TEXT,
 CREATE TABLE IF NOT EXISTS codigos (telefone TEXT PRIMARY KEY, codigo TEXT, expira TEXT, tentativas INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS posicoes (usuario_id INTEGER PRIMARY KEY, lat REAL, lng REAL, em TEXT);
 CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, p256dh TEXT, auth TEXT, usuario_id INTEGER, cliente_id INTEGER, criado_em TEXT);
+CREATE TABLE IF NOT EXISTS debitos (id INTEGER PRIMARY KEY, cliente_id INTEGER, descricao TEXT, valor REAL, pago REAL DEFAULT 0,
+  vencimento TEXT, criado_em TEXT, criado_por TEXT, ativo INTEGER DEFAULT 1);
+CREATE TABLE IF NOT EXISTS reset_senha (usuario_id INTEGER PRIMARY KEY, codigo TEXT, expira TEXT, tentativas INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS idem (id TEXT PRIMARY KEY, status INTEGER, resposta TEXT, criado_em TEXT);
 CREATE INDEX IF NOT EXISTS ix_ped_cli ON pedidos(cliente_id);
 CREATE INDEX IF NOT EXISTS ix_ped_st ON pedidos(status);
@@ -127,6 +131,7 @@ CREATE INDEX IF NOT EXISTS ix_itens ON pedido_itens(pedido_id);
 CREATE INDEX IF NOT EXISTS ix_rec ON recebimentos(pedido_id);
 """
 CONFIG_PADRAO = {
+    "pe_qtd": "2000", "pe_invest": "", "pe_produto": "1", "pe_preco": "", "pe_desde": "",
     "exigir_comprovante": "1",
     "empresa": "Cajuína Dona Júlia", "slogan": "Sabor que é Piauí!",
     "endereco": "Fazenda Sossego, BR 316 Km 208 · Valença do Piauí/PI",
@@ -332,19 +337,183 @@ def push_teste():
     return jsonify(ok=True)
 
 
-@app.post("/api/login")
-def login():
-    pin = str((request.json or {}).get("pin", "")).strip()
-    u = one(db().execute("SELECT * FROM usuarios WHERE pin=? AND ativo=1", (pin,)))
-    if not u:
-        return jsonify(erro="PIN inválido"), 401
+FALHAS_LOGIN = {}
+
+
+def _so_dig(t):
+    return re.sub(r"\D", "", t or "")
+
+
+def achar_usuario(ident):
+    ident = (ident or "").strip().lower()
+    if not ident:
+        return None
+    d = db()
+    u = one(d.execute("SELECT * FROM usuarios WHERE ativo=1 AND (lower(login)=? OR lower(email)=?)", (ident, ident)))
+    if not u and len(_so_dig(ident)) == 11:
+        u = one(d.execute("SELECT * FROM usuarios WHERE ativo=1 AND cpf=?", (_so_dig(ident),)))
+    return u
+
+
+def abrir_sessao(u):
     session.clear()
     session.permanent = True
     session.update(uid=u["id"], nome=u["nome"], papel=u["papel"], perms=json.loads(u["permissoes"] or "[]"),
                    desc_max=u["desconto_max"] or 0)
+
+
+def bloqueado(chave):
+    agora_ = time.time()
+    FALHAS_LOGIN[chave] = [t for t in FALHAS_LOGIN.get(chave, []) if agora_ - t < 600]
+    return len(FALHAS_LOGIN[chave]) >= 8
+
+
+@app.post("/api/login")
+def login():
+    j = request.json or {}
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0]
+    ident, senha = str(j.get("usuario", "")).strip(), str(j.get("senha", ""))
+    chave = f"{ip}:{ident.lower()}"
+    if bloqueado(chave):
+        return jsonify(erro="Muitas tentativas. Aguarde 10 minutos ou use 'Esqueci minha senha'."), 429
+    u = achar_usuario(ident)
+    if not u or not u.get("senha_hash") or not check_password_hash(u["senha_hash"], senha):
+        FALHAS_LOGIN.setdefault(chave, []).append(time.time())
+        return jsonify(erro="Usuário ou senha incorretos"), 401
+    FALHAS_LOGIN.pop(chave, None)
+    abrir_sessao(u)
     registrar("login")
     db().commit()
     return jsonify(me())
+
+
+def mascara_email(e):
+    if "@" not in (e or ""):
+        return ""
+    n, dom = e.split("@", 1)
+    return n[:2] + "•••@" + dom
+
+
+def enviar_email(para, assunto, texto, html=None):
+    host = os.environ.get("CAJU_SMTP_HOST")
+    if not host or not para:
+        return False
+    from email.message import EmailMessage
+    m = EmailMessage()
+    m["Subject"] = assunto
+    m["From"] = os.environ.get("CAJU_SMTP_FROM") or os.environ.get("CAJU_SMTP_USER")
+    m["To"] = para
+    m.set_content(texto)
+    if html:
+        m.add_alternative(html, subtype="html")
+    try:
+        porta = int(os.environ.get("CAJU_SMTP_PORT") or 587)
+        srv = smtplib.SMTP_SSL(host, porta, timeout=15) if porta == 465 else smtplib.SMTP(host, porta, timeout=15)
+        if porta != 465:
+            srv.starttls()
+        if os.environ.get("CAJU_SMTP_USER"):
+            srv.login(os.environ["CAJU_SMTP_USER"], os.environ.get("CAJU_SMTP_PASS", ""))
+        srv.send_message(m)
+        srv.quit()
+        return True
+    except Exception as e:
+        print("email:", e)
+        return False
+
+
+def novo_codigo_senha(uid):
+    cod = f"{secrets.randbelow(1000000):06d}"
+    db().execute("INSERT OR REPLACE INTO reset_senha VALUES (?,?,?,0)",
+                 (uid, generate_password_hash(cod), (agora_dt() + timedelta(minutes=20)).strftime("%Y-%m-%d %H:%M:%S")))
+    db().commit()
+    return cod
+
+
+@app.post("/api/senha/esqueci")
+def senha_esqueci():
+    ident = str((request.json or {}).get("usuario", "")).strip()
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0]
+    if bloqueado(f"rec:{ip}"):
+        return jsonify(erro="Muitas tentativas. Aguarde alguns minutos."), 429
+    FALHAS_LOGIN.setdefault(f"rec:{ip}", []).append(time.time())
+    u = achar_usuario(ident)
+    if not u:
+        return jsonify(erro="Não achamos esse usuário, e-mail ou CPF"), 404
+    cod = novo_codigo_senha(u["id"])
+    c = cfg_all()
+    msg = f"Cajuína Dona Júlia: seu código para criar uma nova senha é {cod}. Vale por 20 minutos. Se não foi você, ignore."
+    canais = []
+    if u.get("email") and enviar_email(u["email"], "Código para nova senha · Cajuína Dona Júlia", msg,
+                                       f"<div style='font-family:sans-serif;border-top:8px solid #F6B400;padding:20px;max-width:420px'>"
+                                       f"<h2 style='margin:0 0 6px'>Cajuína Dona Júlia</h2><p>Seu código para criar uma nova senha:</p>"
+                                       f"<p style='font-size:32px;font-weight:900;letter-spacing:6px;margin:10px 0'>{cod}</p>"
+                                       f"<p style='color:#777;font-size:13px'>Vale por 20 minutos. Se não foi você, ignore este e-mail.</p></div>"):
+        canais.append("e-mail " + mascara_email(u["email"]))
+    if u.get("telefone") and c.get("wa_token"):
+        try:
+            I.wa_enviar_api(c["wa_token"], c.get("wa_phone_id"), u["telefone"], msg)
+            canais.append("WhatsApp final " + _so_dig(u["telefone"])[-4:])
+        except Exception as e:
+            print("wa:", e)
+    r = {"canais": canais}
+    if c.get("demo") == "1":
+        r["demo_codigo"] = cod
+    if not canais and c.get("demo") != "1":
+        r["aviso"] = "Não há e-mail/WhatsApp configurado para envio automático. Peça ao administrador o código (Equipe › Gerar código de acesso)."
+    return jsonify(r)
+
+
+@app.post("/api/senha/redefinir")
+def senha_redefinir():
+    j = request.json or {}
+    u = achar_usuario(j.get("usuario"))
+    nova = str(j.get("senha", ""))
+    if not u:
+        return jsonify(erro="Usuário não encontrado"), 404
+    if len(nova) < 6:
+        return jsonify(erro="A nova senha precisa ter pelo menos 6 caracteres"), 400
+    r = one(db().execute("SELECT * FROM reset_senha WHERE usuario_id=?", (u["id"],)))
+    if not r or r["expira"] < agora() or r["tentativas"] >= 5:
+        return jsonify(erro="Código expirado. Peça um novo."), 400
+    if not check_password_hash(r["codigo"], str(j.get("codigo", "")).strip()):
+        db().execute("UPDATE reset_senha SET tentativas=tentativas+1 WHERE usuario_id=?", (u["id"],))
+        db().commit()
+        return jsonify(erro="Código incorreto"), 400
+    db().execute("UPDATE usuarios SET senha_hash=? WHERE id=?", (generate_password_hash(nova), u["id"]))
+    db().execute("DELETE FROM reset_senha WHERE usuario_id=?", (u["id"],))
+    abrir_sessao(u)
+    registrar("senha redefinida")
+    db().commit()
+    return jsonify(me())
+
+
+@app.post("/api/senha/trocar")
+def senha_trocar():
+    if "uid" not in session:
+        return jsonify(erro="Faça login"), 401
+    j = request.json or {}
+    u = one(db().execute("SELECT * FROM usuarios WHERE id=?", (session["uid"],)))
+    if not check_password_hash(u["senha_hash"] or "", str(j.get("atual", ""))):
+        return jsonify(erro="Senha atual incorreta"), 400
+    if len(str(j.get("nova", ""))) < 6:
+        return jsonify(erro="A nova senha precisa ter pelo menos 6 caracteres"), 400
+    db().execute("UPDATE usuarios SET senha_hash=? WHERE id=?", (generate_password_hash(str(j["nova"])), u["id"]))
+    registrar("senha alterada")
+    db().commit()
+    return jsonify(ok=True)
+
+
+@app.post("/api/equipe/<int:uid>/codigo")
+@exige("equipe")
+def equipe_codigo(uid):
+    u = one(db().execute("SELECT * FROM usuarios WHERE id=?", (uid,)))
+    if not u:
+        abort(404)
+    cod = novo_codigo_senha(uid)
+    msg = (f"Olá, {u['nome'].split(' ')[0]}! Seu acesso ao sistema da Cajuína Dona Júlia:\n"
+           f"Usuário: {u['login']}\nCódigo para criar sua senha: {cod} (vale 20 min)\n"
+           f"Abra {request.host_url}, toque em 'Esqueci minha senha' e use o código.")
+    return jsonify(codigo=cod, login=u["login"], whatsapp=I.wa_link(u["telefone"], msg) if u.get("telefone") else "")
 
 
 def me():
@@ -525,7 +694,10 @@ def criar_pedido(j, usuario, permite_preco=False, canal_padrao="encomenda"):
                       (pid, p["id"], p["nome"], q, u, round(q * u, 2)))
         alocar(c.lastrowid, p["id"], q, pid, usuario)
     if j.get("pago_agora"):
-        receber(pid, total, j.get("forma") or "pix", usuario, criado[:10])
+        vp = j.get("valor_pago")
+        vp = total if vp in (None, "") else min(total, float(vp))
+        if vp > 0.009:
+            receber(pid, vp, j.get("forma") or "pix", usuario, criado[:10])
     return pid
 
 
@@ -543,7 +715,11 @@ def receber(pid, valor, forma, usuario, data=None, obs=""):
 
 def em_aberto_cliente(cid):
     return round(db().execute("SELECT COALESCE(SUM(total-pago),0) FROM pedidos WHERE cliente_id=? AND status!='cancelado'",
-                              (cid,)).fetchone()[0], 2)
+                              (cid,)).fetchone()[0] + pendencias_cliente(cid), 2)
+
+
+def pendencias_cliente(cid):
+    return round(db().execute("SELECT COALESCE(SUM(valor-pago),0) FROM debitos WHERE cliente_id=? AND ativo=1", (cid,)).fetchone()[0], 2)
 
 
 def pedido_completo(pid):
@@ -562,6 +738,8 @@ def pedido_completo(pid):
     p["recebimentos"] = rows(d.execute("SELECT * FROM recebimentos WHERE pedido_id=? ORDER BY id", (pid,)))
     p["aberto"] = round(p["total"] - p["pago"], 2)
     p["vencido"] = p["aberto"] > 0.009 and p["status"] != "cancelado" and (p["vencimento"] or "9") < hoje()
+    if p.get("cliente_id") and p["status"] != "cancelado":
+        p["outros_aberto"] = round(em_aberto_cliente(p["cliente_id"]) - (p["total"] - p["pago"]), 2)
     p["comprovante"] = bool(p.get("canhoto"))
     p["comprovante_url"] = f"/api/pedidos/{p['id']}/comprovante.jpg?v={p.get('comprovante_em') or ''}" if p["comprovante"] else ""
     p.pop("canhoto", None)
@@ -893,7 +1071,7 @@ TAB = {
                  "tabela_id", "prazo_dias", "limite", "obs", "ativo"],
     "insumos": ["nome", "unidade", "minimo", "custo", "ativo"],
     "contas_pagar": ["descricao", "categoria", "valor", "vencimento", "pago_em", "ativo"],
-    "usuarios": ["nome", "pin", "papel", "permissoes", "desconto_max", "telefone", "comissao", "ativo"],
+    "usuarios": ["nome", "login", "email", "cpf", "papel", "permissoes", "desconto_max", "telefone", "comissao", "ativo", "senha_hash"],
 }
 PERM_TAB = {"produtos": "config", "tabelas": "config", "rotas": "rotas", "clientes": "clientes", "insumos": "estoque",
             "contas_pagar": "financeiro", "usuarios": "equipe"}
@@ -912,8 +1090,27 @@ def cad_salvar(tab, rid=None):
     if tab == "usuarios":
         if "permissoes" in j and isinstance(j["permissoes"], list):
             j["permissoes"] = json.dumps([p for p in j["permissoes"] if p in PERMISSOES])
-        if "pin" in j and (not str(j["pin"]).isdigit() or len(str(j["pin"])) < 4):
-            return jsonify(erro="PIN precisa ter 4 ou mais números"), 400
+        j.pop("senha_hash", None)
+        if "login" in j:
+            j["login"] = re.sub(r"[^a-z0-9._-]", "", unicodedata.normalize("NFKD", str(j["login"]).lower()).encode("ascii", "ignore").decode())
+            if len(j["login"]) < 2:
+                return jsonify(erro="Usuário precisa ter pelo menos 2 letras (sem espaço)"), 400
+            if db().execute("SELECT 1 FROM usuarios WHERE lower(login)=? AND id!=?", (j["login"], rid or 0)).fetchone():
+                return jsonify(erro="Esse usuário já existe"), 400
+        if "email" in j:
+            j["email"] = str(j["email"]).strip().lower()
+            if j["email"] and db().execute("SELECT 1 FROM usuarios WHERE lower(email)=? AND id!=?", (j["email"], rid or 0)).fetchone():
+                return jsonify(erro="Esse e-mail já está em outro usuário"), 400
+        if "cpf" in j:
+            j["cpf"] = so_dig(j["cpf"])
+            if j["cpf"] and len(j["cpf"]) != 11:
+                return jsonify(erro="CPF precisa ter 11 números"), 400
+        if j.get("senha"):
+            if len(str(j["senha"])) < 6:
+                return jsonify(erro="A senha precisa ter pelo menos 6 caracteres"), 400
+            j["senha_hash"] = generate_password_hash(str(j["senha"]))
+        if not rid and not j.get("login"):
+            return jsonify(erro="Defina o usuário de acesso"), 400
     for k in ("lat", "lng", "rota_id", "tabela_id"):
         if k in j and j[k] in ("", None):
             j[k] = None
@@ -967,7 +1164,7 @@ def base():
            "config": {k: v for k, v in c.items() if not k.startswith("_")}, "permissoes": PERMISSOES, "papeis": PAPEIS,
            "canais": CANAIS, "formas": FORMAS, "hoje": hoje()}
     if "equipe" in perms():
-        out["usuarios"] = rows(d.execute("SELECT * FROM usuarios ORDER BY ativo DESC, nome"))
+        out["usuarios"] = rows(d.execute("SELECT id, nome, login, email, cpf, papel, permissoes, desconto_max, telefone, comissao, ativo, (senha_hash!='') tem_senha FROM usuarios ORDER BY ativo DESC, nome"))
     if {"estoque", "producao"} & perms():
         out["insumos"] = rows(d.execute("SELECT * FROM insumos ORDER BY nome"))
     return jsonify(out)
@@ -978,15 +1175,18 @@ def base():
 def clientes_lista():
     d = db()
     cs = rows(d.execute("""SELECT c.*, r.nome rota, t.nome tabela,
-        (SELECT COALESCE(SUM(total-pago),0) FROM pedidos WHERE cliente_id=c.id AND status!='cancelado') aberto,
-        (SELECT COALESCE(SUM(total-pago),0) FROM pedidos WHERE cliente_id=c.id AND status!='cancelado' AND total-pago>0.009 AND vencimento<?) vencido,
+        (SELECT COALESCE(SUM(total-pago),0) FROM pedidos WHERE cliente_id=c.id AND status!='cancelado')
+          + (SELECT COALESCE(SUM(valor-pago),0) FROM debitos WHERE cliente_id=c.id AND ativo=1) aberto,
+        (SELECT COALESCE(SUM(valor-pago),0) FROM debitos WHERE cliente_id=c.id AND ativo=1) pendencias,
+        (SELECT COALESCE(SUM(total-pago),0) FROM pedidos WHERE cliente_id=c.id AND status!='cancelado' AND total-pago>0.009 AND vencimento<?)
+          + (SELECT COALESCE(SUM(valor-pago),0) FROM debitos WHERE cliente_id=c.id AND ativo=1 AND valor-pago>0.009 AND vencimento<?) vencido,
         (SELECT MAX(criado_em) FROM pedidos WHERE cliente_id=c.id AND status!='cancelado') ultimo,
         (SELECT COUNT(*) FROM pedidos WHERE cliente_id=c.id AND status!='cancelado') n_pedidos,
         (SELECT COALESCE(SUM(total),0) FROM pedidos WHERE cliente_id=c.id AND status!='cancelado' AND criado_em>=?) total_ano
         FROM clientes c LEFT JOIN rotas r ON r.id=c.rota_id LEFT JOIN tabelas t ON t.id=c.tabela_id ORDER BY c.ativo DESC, c.nome""",
-                        (hoje(), hoje()[:4] + "-01-01")))
+                        (hoje(), hoje(), hoje()[:4] + "-01-01")))
     for c in cs:
-        c["aberto"] = round(c["aberto"], 2); c["vencido"] = round(c["vencido"], 2)
+        c["aberto"] = round(c["aberto"], 2); c["vencido"] = round(c["vencido"], 2); c["pendencias"] = round(c["pendencias"], 2)
         c["dias_sem_comprar"] = (agora_dt() - datetime.strptime(c["ultimo"][:10], "%Y-%m-%d")).days if c["ultimo"] else None
     return jsonify(cs)
 
@@ -999,6 +1199,8 @@ def cliente_cobranca(cid):
     ps = rows(d.execute("SELECT numero, total-pago aberto, vencimento FROM pedidos WHERE cliente_id=? AND status!='cancelado' AND total-pago>0.009 ORDER BY vencimento", (cid,)))
     tot = sum(p["aberto"] for p in ps)
     linhas = "\n".join(f"• Pedido #{p['numero']} — {brl(p['aberto'])} (vence {app.jinja_env.filters['dbr'](p['vencimento'])})" for p in ps)
+    for x in db().execute("SELECT descricao, valor-pago v FROM debitos WHERE cliente_id=? AND ativo=1 AND valor-pago>0.009", (cid,)):
+        linhas += f"\n• {x['descricao']} — {brl(x['v'])}"
     base = (cfg_all().get("url_publica") or request.host_url).rstrip("/")
     msg = (f"Olá, {c['nome']}! Tudo bem? 🍹\nSegue o resumo dos pedidos em aberto com a Cajuína Dona Júlia:\n{linhas}\n"
            f"Total: {brl(tot)}\nVocê pode ver e pagar pelo Pix na sua área: {base}/cliente\nObrigado pela parceria!")
@@ -1109,6 +1311,9 @@ def painel():
     dia = rows(d.execute(f"SELECT substr(criado_em,1,10) dia, SUM(total) total {base} GROUP BY dia ORDER BY dia", a))
     receber_ = one(d.execute("""SELECT COALESCE(SUM(total-pago),0) total, COALESCE(SUM(CASE WHEN vencimento<? THEN total-pago END),0) vencido,
         COUNT(CASE WHEN vencimento<? THEN 1 END) n_vencidos FROM pedidos WHERE status!='cancelado' AND total-pago>0.009""", (hoje(), hoje())))
+    pend = one(d.execute("""SELECT COALESCE(SUM(valor-pago),0) t, COALESCE(SUM(CASE WHEN vencimento<? THEN valor-pago END),0) v,
+        COUNT(CASE WHEN vencimento<? AND valor-pago>0.009 THEN 1 END) n FROM debitos WHERE ativo=1""", (hoje(), hoje())))
+    receber_ = {"total": receber_["total"] + pend["t"], "vencido": receber_["vencido"] + pend["v"], "n_vencidos": receber_["n_vencidos"] + pend["n"]}
     recebido = d.execute("SELECT COALESCE(SUM(valor),0) FROM recebimentos WHERE data BETWEEN ? AND ?", a).fetchone()[0]
     estoque = rows(d.execute("SELECT id, nome, minimo FROM produtos WHERE ativo=1 ORDER BY ordem"))
     for p in estoque:
@@ -1132,7 +1337,127 @@ def painel():
     return jsonify(de=de, ate=ate, vendas=round(v["total"], 2), pedidos=v["n"], frete=round(v["frete"], 2), unidades=un,
                    variacao=round((v["total"] - ant) / ant * 100, 1) if ant else None, cmv=round(cmv, 2),
                    ticket=round(v["total"] / v["n"], 2) if v["n"] else 0, canal=canal, produto=produto, clientes=clientes, rota=rota,
-                   dia=dia, receber=receber_, recebido=round(recebido, 2), estoque=estoque, alertas=alertas, a_entregar=a_entregar)
+                   dia=dia, receber=receber_, recebido=round(recebido, 2), estoque=estoque, alertas=alertas, a_entregar=a_entregar,
+                   **({"meses": serie_meses(6), "resultado": resultado(de, ate), "equilibrio": ponto_equilibrio()} if "financeiro" in perms() else {}))
+
+
+# ------------------------------------------------------------------ pendências / saldo devedor manual do cliente
+@app.get("/api/clientes/<int:cid>/debitos")
+@exige("clientes", "financeiro", "pedidos")
+def debitos_lista(cid):
+    return jsonify(rows(db().execute("SELECT *, valor-pago aberto FROM debitos WHERE cliente_id=? AND ativo=1 ORDER BY vencimento", (cid,))))
+
+
+@app.post("/api/clientes/<int:cid>/debitos")
+@exige("financeiro", "clientes")
+def debito_novo(cid):
+    j = request.json or {}
+    v = round(float(j.get("valor") or 0), 2)
+    if v <= 0:
+        return jsonify(erro="Informe o valor"), 400
+    if not one(db().execute("SELECT id FROM clientes WHERE id=?", (cid,))):
+        abort(404)
+    did = db().execute("INSERT INTO debitos (cliente_id,descricao,valor,vencimento,criado_em,criado_por) VALUES (?,?,?,?,?,?)",
+                       (cid, (j.get("descricao") or "Saldo devedor").strip()[:120], v, j.get("vencimento") or hoje(), agora(), eu())).lastrowid
+    registrar("pendência lançada", f"cliente {cid} · {brl(v)} · {j.get('descricao', '')}")
+    db().commit()
+    return jsonify(id=did)
+
+
+@app.post("/api/debitos/<int:did>/receber")
+@exige("financeiro", "entregas")
+def debito_receber(did):
+    j = request.json or {}
+    x = one(db().execute("SELECT * FROM debitos WHERE id=? AND ativo=1", (did,)))
+    if not x:
+        abort(404)
+    v = round(min(float(j.get("valor") or 0), x["valor"] - x["pago"]), 2)
+    if v <= 0:
+        return jsonify(erro="Nada a receber"), 400
+    db().execute("UPDATE debitos SET pago=pago+? WHERE id=?", (v, did))
+    db().execute("INSERT INTO recebimentos (pedido_id,debito_id,valor,forma,data,usuario,obs) VALUES (NULL,?,?,?,?,?,?)",
+                 (did, v, j.get("forma") or "pix", hoje(), eu(), x["descricao"]))
+    registrar("pendência recebida", f"{x['descricao']} · {brl(v)}")
+    db().commit()
+    notificar_equipe(f"💰 Recebido {brl(v)}", f"Pendência: {x['descricao']} · por {eu()}", "/#financeiro", perm="financeiro",
+                     exceto_uid=session.get("uid"), tag=f"deb{did}")
+    return jsonify(ok=True)
+
+
+@app.delete("/api/debitos/<int:did>")
+@exige("financeiro")
+def debito_apagar(did):
+    x = one(db().execute("SELECT * FROM debitos WHERE id=?", (did,)))
+    if not x:
+        abort(404)
+    if x["pago"] > 0.009:
+        return jsonify(erro="Já tem pagamento nessa pendência; não dá para apagar"), 400
+    db().execute("UPDATE debitos SET ativo=0 WHERE id=?", (did,))
+    registrar("pendência apagada", f"{x['descricao']} · {brl(x['valor'])}")
+    db().commit()
+    return jsonify(ok=True)
+
+
+# ------------------------------------------------------------------ resultado (lucro/prejuízo) e ponto de equilíbrio
+def resultado(de, ate):
+    d = db()
+    vendas = d.execute("SELECT COALESCE(SUM(total),0) FROM pedidos WHERE status!='cancelado' AND substr(criado_em,1,10) BETWEEN ? AND ?", (de, ate)).fetchone()[0]
+    cmv = -(d.execute("SELECT COALESCE(SUM(qtd*custo),0) FROM movs WHERE tipo IN ('venda','estorno') AND substr(criado_em,1,10) BETWEEN ? AND ?", (de, ate)).fetchone()[0])
+    perdas = -(d.execute("SELECT COALESCE(SUM(qtd*custo),0) FROM movs WHERE tipo='perda' AND produto_id IS NOT NULL AND substr(criado_em,1,10) BETWEEN ? AND ?", (de, ate)).fetchone()[0])
+    desp = d.execute("SELECT COALESCE(SUM(valor),0) FROM contas_pagar WHERE ativo=1 AND vencimento BETWEEN ? AND ?", (de, ate)).fetchone()[0]
+    return {"vendas": round(vendas, 2), "cmv": round(cmv, 2), "perdas": round(perdas, 2), "despesas": round(desp, 2),
+            "custos": round(cmv + perdas + desp, 2), "lucro": round(vendas - cmv - perdas - desp, 2)}
+
+
+def serie_meses(n=6):
+    MES = "jan fev mar abr mai jun jul ago set out nov dez".split()
+    h = datetime.strptime(hoje(), "%Y-%m-%d").date().replace(day=1)
+    out = []
+    for k in range(n - 1, -1, -1):
+        y, m = h.year, h.month - k
+        while m <= 0:
+            m += 12; y -= 1
+        ini = date(y, m, 1)
+        fim = (date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1))
+        fim = min(fim, datetime.strptime(hoje(), "%Y-%m-%d").date())
+        r = resultado(ini.isoformat(), fim.isoformat())
+        r["mes"] = f"{MES[m - 1]}/{str(y)[2:]}"
+        r["parcial"] = fim.month == h.month and fim.year == h.year
+        out.append(r)
+    return out
+
+
+def ponto_equilibrio():
+    c = cfg_all()
+    d = db()
+    pid = int(c.get("pe_produto") or 1)
+    prod = one(d.execute("SELECT id, nome, un_caixa FROM produtos WHERE id=?", (pid,))) or {"id": pid, "nome": "?", "un_caixa": 1}
+    qtd = int(float(c.get("pe_qtd") or 0))
+    invest = float(c.get("pe_invest") or 0)
+    desde = c.get("pe_desde") or mais_dias(hoje(), -30)
+    v = d.execute("""SELECT COALESCE(SUM(i.qtd),0), COALESCE(SUM(i.total),0) FROM pedido_itens i JOIN pedidos p ON p.id=i.pedido_id
+        WHERE i.produto_id=? AND p.status!='cancelado' AND substr(p.criado_em,1,10)>=?""", (pid, desde)).fetchone()
+    vendidas, receita = int(v[0]), round(v[1], 2)
+    if qtd and vendidas > qtd:   # conta só as unidades do investimento
+        receita, vendidas = round(receita * qtd / vendidas, 2), qtd
+    preco_medio = round(receita / vendidas, 4) if vendidas else None
+    preco_ = float(c.get("pe_preco") or 0) or preco_medio or preco(int(c.get("tabela_padrao") or 1), pid)
+    precisa = int(-(-invest // preco_)) if invest and preco_ else 0
+    return {"produto": prod, "qtd": qtd, "invest": round(invest, 2), "preco": round(preco_, 2), "preco_medio": preco_medio,
+            "preco_manual": bool(float(c.get("pe_preco") or 0)), "desde": desde, "vendidas": vendidas, "receita": receita,
+            "precisa": precisa, "faltam": max(0, precisa - vendidas), "pago": invest > 0 and receita >= invest,
+            "lucro_tudo": round(qtd * preco_ - invest, 2), "lucro_ate_agora": round(receita - invest, 2),
+            "cabe": precisa <= qtd if qtd else True, "custo_un": round(invest / qtd, 2) if qtd else None,
+            "configurado": invest > 0}
+
+
+@app.get("/api/equilibrio")
+@exige("financeiro", "relatorios")
+def api_equilibrio():
+    r = ponto_equilibrio()
+    r["lotes"] = rows(db().execute("""SELECT l.id, l.codigo, l.data_fab, li.produto_id, li.qtd, li.custo_unit, ROUND(li.qtd*li.custo_unit,2) custo_total
+        FROM lotes l JOIN lote_itens li ON li.lote_id=l.id ORDER BY l.data_fab DESC LIMIT 12"""))
+    return jsonify(r)
 
 
 @app.get("/api/financeiro")
@@ -1151,6 +1476,10 @@ def financeiro():
     desp = rows(d.execute("SELECT categoria, SUM(valor) total FROM contas_pagar WHERE ativo=1 AND vencimento BETWEEN ? AND ? GROUP BY categoria ORDER BY total DESC", (de, ate)))
     td = sum(x["total"] for x in desp)
     formas = rows(d.execute("SELECT forma, SUM(valor) total FROM recebimentos WHERE data BETWEEN ? AND ? GROUP BY forma ORDER BY total DESC", (de, ate)))
+    receber_ += [dict(x, tipo="pendencia") for x in rows(d.execute("""SELECT x.id debito_id, x.descricao, x.valor total, x.pago, x.valor-x.pago aberto,
+        x.vencimento, x.criado_em, c.id cliente_id, c.nome cliente, c.telefone FROM debitos x JOIN clientes c ON c.id=x.cliente_id
+        WHERE x.ativo=1 AND x.valor-x.pago>0.009"""))]
+    receber_.sort(key=lambda r: r["vencimento"] or "")
     for r in receber_:
         r["aberto"] = round(r["aberto"], 2)
         r["dias"] = (datetime.strptime(hoje(), "%Y-%m-%d") - datetime.strptime(r["vencimento"], "%Y-%m-%d")).days
@@ -1184,6 +1513,53 @@ def relatorio_csv():
                         f(p["pago"]), p["vencimento"]])
     return Response("﻿" + buf.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": f"attachment; filename=vendas_{de}_{ate}.csv"})
+
+
+@app.get("/relatorio")
+def relatorio_pdf():
+    if "uid" not in session:
+        return redirect("/")
+    if not ({"relatorios", "financeiro"} & set(perms())):
+        abort(403)
+    d = db()
+    de, ate = periodo()
+    r = resultado(de, ate)
+    base = "FROM pedidos WHERE status!='cancelado' AND substr(criado_em,1,10) BETWEEN ? AND ?"
+    a = (de, ate)
+    v = one(d.execute(f"SELECT COUNT(*) n, COALESCE(SUM(total),0) total {base}", a))
+    un = d.execute("""SELECT COALESCE(SUM(i.qtd),0) FROM pedido_itens i JOIN pedidos p ON p.id=i.pedido_id
+        WHERE p.status!='cancelado' AND substr(p.criado_em,1,10) BETWEEN ? AND ?""", a).fetchone()[0]
+    produto = rows(d.execute("""SELECT pr.nome, pr.un_caixa, SUM(i.qtd) qtd, SUM(i.total) total FROM pedido_itens i JOIN pedidos p ON p.id=i.pedido_id
+        JOIN produtos pr ON pr.id=i.produto_id WHERE p.status!='cancelado' AND substr(p.criado_em,1,10) BETWEEN ? AND ?
+        GROUP BY pr.id ORDER BY total DESC""", a))
+    canal = rows(d.execute(f"SELECT canal, COUNT(*) n, SUM(total) total {base} GROUP BY canal ORDER BY total DESC", a))
+    for c_ in canal:
+        c_["nome"] = CANAIS.get(c_["canal"], c_["canal"])
+    rota = rows(d.execute("""SELECT COALESCE(r.nome,'Sem rota') nome, COUNT(*) n, SUM(p.total) total FROM pedidos p LEFT JOIN rotas r ON r.id=p.rota_id
+        WHERE p.status!='cancelado' AND substr(p.criado_em,1,10) BETWEEN ? AND ? GROUP BY p.rota_id ORDER BY total DESC""", a))
+    clientes = rows(d.execute("""SELECT c.nome, COUNT(*) n, SUM(p.total) total FROM pedidos p JOIN clientes c ON c.id=p.cliente_id
+        WHERE p.status!='cancelado' AND substr(p.criado_em,1,10) BETWEEN ? AND ? GROUP BY c.id ORDER BY total DESC LIMIT 10""", a))
+    desp = rows(d.execute("SELECT categoria, SUM(valor) total FROM contas_pagar WHERE ativo=1 AND vencimento BETWEEN ? AND ? GROUP BY categoria ORDER BY total DESC", a))
+    devedores = rows(d.execute("""SELECT c.nome, SUM(p.total-p.pago) v, MIN(p.vencimento) venc FROM pedidos p JOIN clientes c ON c.id=p.cliente_id
+        WHERE p.status!='cancelado' AND p.total-p.pago>0.009 GROUP BY c.id ORDER BY v DESC LIMIT 10"""))
+    for x in d.execute("SELECT c.nome, SUM(x.valor-x.pago) v, MIN(x.vencimento) venc FROM debitos x JOIN clientes c ON c.id=x.cliente_id WHERE x.ativo=1 AND x.valor-x.pago>0.009 GROUP BY c.id"):
+        f = next((y for y in devedores if y["nome"] == x["nome"]), None)
+        if f:
+            f["v"] += x["v"]; f["venc"] = min(f["venc"], x["venc"])
+        else:
+            devedores.append(dict(x))
+    devedores.sort(key=lambda y: -y["v"])
+    estoque = rows(d.execute("SELECT id, nome, un_caixa FROM produtos WHERE ativo=1 ORDER BY ordem"))
+    for p in estoque:
+        p["saldo"] = saldo_produto(p["id"])
+    dia = rows(d.execute(f"SELECT substr(criado_em,1,10) dia, SUM(total) total {base} GROUP BY dia ORDER BY dia", a))
+    meses = serie_meses(6)
+    return render_template("relatorio.html", c=cfg_all(), de=de, ate=ate, r=r, n=v["n"], vendas=v["total"], un=un, produto=produto,
+                           canal=canal, rota=rota, clientes=clientes, desp=desp, devedores=devedores[:10], estoque=estoque, dia=dia,
+                           meses=meses, pe=ponto_equilibrio(), quem=eu(), gerado=agora(), auto=request.args.get("imprimir") == "1",
+                           ticket=(v["total"] / v["n"]) if v["n"] else 0,
+                           maxm=max([abs(m["lucro"]) for m in meses] + [abs(m["vendas"]) for m in meses] + [1]),
+                           maxd=max([x["total"] for x in dia] + [1]))
 
 
 @app.get("/api/log")
@@ -1362,11 +1738,14 @@ def c_pedido():
 
 # ------------------------------------------------------------------ config
 @app.put("/api/config")
-@exige("config")
+@exige("config", "financeiro")
 def config_put():
     d = db()
+    so_pe = "config" not in perms()
     for k, v in (request.json or {}).items():
-        if k in CONFIG_PADRAO or k in ("tabela_padrao", "tabela_feira", "custo_caju_kg", "wa_token", "wa_phone_id"):
+        if so_pe and not k.startswith("pe_"):
+            continue
+        if k in CONFIG_PADRAO or k in ("tabela_padrao", "tabela_feira", "custo_caju_kg", "wa_token", "wa_phone_id"):  # pe_* = ponto de equilíbrio
             d.execute("INSERT OR REPLACE INTO config VALUES (?,?)", (k, str(v)))
     registrar("configurações alteradas")
     d.commit()
@@ -1444,9 +1823,18 @@ def init_db():
     con.executescript(SCHEMA)
     # colunas novas em bancos que já existiam
     for tab, col, tipo in [("pedidos", "recebido_por", "TEXT DEFAULT ''"), ("pedidos", "comprovante_em", "TEXT DEFAULT ''"),
-                           ("pedidos", "comprovante_por", "TEXT DEFAULT ''"), ("pedidos", "comprovante_obs", "TEXT DEFAULT ''")]:
+                           ("pedidos", "comprovante_por", "TEXT DEFAULT ''"), ("pedidos", "comprovante_obs", "TEXT DEFAULT ''"),
+                           ("usuarios", "login", "TEXT"), ("usuarios", "email", "TEXT DEFAULT ''"), ("usuarios", "cpf", "TEXT DEFAULT ''"),
+                           ("usuarios", "senha_hash", "TEXT DEFAULT ''"), ("recebimentos", "debito_id", "INTEGER")]:
         if col not in [r[1] for r in con.execute(f"PRAGMA table_info({tab})")]:
             con.execute(f"ALTER TABLE {tab} ADD COLUMN {col} {tipo}")
+    # quem só tinha PIN ganha usuário (primeiro nome) e senha = PIN antigo; a pessoa troca depois
+    for u in con.execute("SELECT id, nome, pin FROM usuarios WHERE (login IS NULL OR login='')").fetchall():
+        base = re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", (u[1] or "user").split(" ")[0].lower()).encode("ascii", "ignore").decode()) or "user"
+        lg, n = base, 2
+        while con.execute("SELECT 1 FROM usuarios WHERE login=?", (lg,)).fetchone():
+            lg, n = f"{base}{n}", n + 1
+        con.execute("UPDATE usuarios SET login=?, senha_hash=? WHERE id=?", (lg, generate_password_hash(str(u[2] or "1234")), u[0]))
     for k, v in CONFIG_PADRAO.items():
         con.execute("INSERT OR IGNORE INTO config VALUES (?,?)", (k, v))
     vazio = con.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0] == 0

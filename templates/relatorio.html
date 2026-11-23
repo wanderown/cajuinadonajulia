@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relatório {{ de | dbr }} a {{ ate | dbr }} — {{ c.empresa }}</title>
+<style>
+@page{size:A4;margin:11mm}
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--ylw:#F6B400;--red:#D7261E;--ink:#2B1B14;--mut:#7d6550;--line:#F0E2C4;--cream:#FFF9EC;--leaf:#3E8E2F}
+body{font-family:Inter,system-ui,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:#efe6d6;font-size:12.5px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.doc{max-width:860px;margin:18px auto;background:#fff;border-top:10px solid var(--ylw);border-radius:6px;box-shadow:0 8px 30px rgba(43,27,20,.18);padding:28px 32px}
+.dh{display:flex;gap:16px;align-items:center;border-bottom:2.5px solid var(--ink);padding-bottom:14px}
+.dh img{height:78px}.dl{flex:1;color:var(--mut);font-size:11.5px;line-height:1.55}.dl b{display:block;color:var(--ink);font-size:16px}
+.dn{text-align:right}.dn small{display:block;font-size:10.5px;letter-spacing:2px;color:var(--red);font-weight:900}.dn b{display:block;font-size:22px;font-weight:900;line-height:1.15}.dn span{font-size:11px;color:var(--mut)}
+h2{font-size:10.5px;letter-spacing:2px;color:var(--red);font-weight:900;margin:22px 0 8px;text-transform:uppercase}
+.k{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px}
+.k div{background:var(--cream);border-radius:6px;padding:10px 12px;border-top:5px solid var(--ylw)}
+.k small{display:block;font-size:9.5px;letter-spacing:1.3px;color:var(--mut);font-weight:800;text-transform:uppercase}
+.k b{display:block;font-size:19px;font-weight:900;margin-top:2px}.k span{font-size:10.5px;color:var(--mut)}
+.k .pos{border-top-color:var(--leaf)}.k .neg{border-top-color:var(--red)}.pos b{color:#2c6b22}.neg b{color:var(--red)}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+table{width:100%;border-collapse:collapse}
+th{background:var(--ink);color:var(--ylw);font-size:10px;text-transform:uppercase;letter-spacing:.5px;text-align:left;padding:6px 8px}
+th:first-child{border-radius:5px 0 0 5px}th:last-child{border-radius:0 5px 5px 0}
+td{padding:6px 8px;border-bottom:1px solid #f1e8dc;font-size:12px}
+.n{text-align:right;white-space:nowrap}.m{color:var(--mut);font-size:11px}
+.dre td{border:none;padding:4px 8px}.dre .t td{border-top:2.5px solid var(--ink);font-weight:900;font-size:15px;padding-top:8px}
+.bx{background:var(--cream);border-radius:6px;padding:12px 14px}
+.pe{display:flex;gap:16px;align-items:center}
+.pe .bar{flex:1;height:16px;background:#F0E2C4;border-radius:10px;overflow:hidden;margin:6px 0}
+.pe .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--ylw),var(--leaf))}
+.pe big{font-size:26px;font-weight:900;display:block;line-height:1.1}
+svg text{font-family:inherit}
+.foot{margin-top:22px;text-align:center;font-size:10px;color:var(--mut);border-top:1px dashed var(--line);padding-top:8px}
+.sec{break-inside:avoid}
+.tb{max-width:860px;margin:14px auto 0;display:flex;gap:8px;justify-content:flex-end;align-items:center;flex-wrap:wrap}
+.tb button,.tb a{background:var(--red);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-weight:800;font-size:13px;cursor:pointer;font-family:inherit;text-decoration:none}
+.tb input{padding:7px 8px;border:1px solid #e2d3b6;border-radius:8px;font-family:inherit}.tb .g{background:#fff;color:var(--ink);border:1px solid #e2d3b6}
+@media print{body{background:#fff}.doc{box-shadow:none;margin:0;max-width:none;padding:0;border-radius:0}.tb{display:none}}
+@media (max-width:640px){.doc{padding:16px 12px;margin:8px}.dh{flex-wrap:wrap}.dh img{height:56px}.dn{text-align:left}.k{grid-template-columns:1fr 1fr}.g2{grid-template-columns:1fr}.pe{flex-direction:column;align-items:stretch}}
+</style></head><body>
+<form class="tb" method="get"><span class="m">Período</span><input type="date" name="de" value="{{ de }}"><input type="date" name="ate" value="{{ ate }}"><button class="g" type="submit">Atualizar</button><button type="button" onclick="print()">⬇ Salvar PDF / Imprimir</button></form>
+<div class="doc">
+  <div class="dh"><img src="/static/logo.png" alt="">
+    <div class="dl"><b>{{ c.empresa | upper }}</b>{{ c.endereco }}<br>{{ c.telefones }}{% if c.instagram %} · @{{ c.instagram }}{% endif %}</div>
+    <div class="dn"><small>RELATÓRIO GERENCIAL</small><b>{{ de | dbr }}<br>a {{ ate | dbr }}</b><span>Gerado em {{ gerado | dbr }} {{ gerado[11:16] }} · {{ quem }}</span></div></div>
+
+  <div class="k">
+    <div><small>Vendas</small><b>R$ {{ vendas | brl }}</b><span>{{ n }} pedidos · ticket R$ {{ ticket | brl }}</span></div>
+    <div><small>Custos totais</small><b>R$ {{ r.custos | brl }}</b><span>produto + perdas + despesas</span></div>
+    <div class="{{ 'pos' if r.lucro >= 0 else 'neg' }}"><small>{{ 'Lucro' if r.lucro >= 0 else 'Prejuízo' }}</small><b>R$ {{ r.lucro | brl }}</b><span>{% if vendas %}margem {{ '%.0f' % (r.lucro / vendas * 100) }}%{% endif %}</span></div>
+    <div><small>Garrafas/unid. vendidas</small><b>{{ '{:,}'.format(un).replace(',', '.') }}</b><span>no período</span></div>
+  </div>
+
+  <div class="g2">
+    <div class="sec"><h2>Resultado do período</h2>
+      <table class="dre"><tr><td>Vendas</td><td class="n">R$ {{ r.vendas | brl }}</td></tr>
+        <tr><td>(−) Custo dos produtos vendidos</td><td class="n">R$ {{ r.cmv | brl }}</td></tr>
+        <tr><td>(−) Perdas de estoque</td><td class="n">R$ {{ r.perdas | brl }}</td></tr>
+        {% for x in desp %}<tr><td class="m">(−) {{ x.categoria }}</td><td class="n m">R$ {{ x.total | brl }}</td></tr>{% endfor %}
+        <tr class="t"><td>{{ 'LUCRO' if r.lucro >= 0 else 'PREJUÍZO' }}</td><td class="n" style="color:{{ '#2c6b22' if r.lucro >= 0 else '#D7261E' }}">R$ {{ r.lucro | brl }}</td></tr></table></div>
+    <div class="sec"><h2>Lucro ou prejuízo · últimos 6 meses</h2>
+      {% set W = 380 %}{% set H = 170 %}{% set bw = 26 %}{% set z = H / 2 %}
+      <svg viewBox="0 0 {{ W }} {{ H + 34 }}" width="100%">
+        <line x1="0" y1="{{ z }}" x2="{{ W }}" y2="{{ z }}" stroke="#2B1B14" stroke-width="1.2"/>
+        {% for m in meses %}{% set x = 18 + loop.index0 * 60 %}
+          {% set hv = (m.vendas / maxm) * (z - 14) %}{% set hl = (m.lucro | abs) / maxm * (z - 14) %}
+          <rect x="{{ x }}" y="{{ z - hv }}" width="{{ bw - 8 }}" height="{{ hv }}" fill="#F6B400" opacity=".45" rx="2"/>
+          {% if m.lucro >= 0 %}<rect x="{{ x + bw - 10 }}" y="{{ z - hl }}" width="{{ bw - 4 }}" height="{{ hl }}" fill="#3E8E2F" rx="2"/>
+          {% else %}<rect x="{{ x + bw - 10 }}" y="{{ z }}" width="{{ bw - 4 }}" height="{{ hl }}" fill="#D7261E" rx="2"/>{% endif %}
+          <text x="{{ x + bw - 4 }}" y="{{ H + 14 }}" font-size="10" text-anchor="middle" fill="#7d6550">{{ m.mes }}{{ '*' if m.parcial }}</text>
+          <text x="{{ x + bw - 4 }}" y="{{ H + 27 }}" font-size="9" font-weight="700" text-anchor="middle" fill="{{ '#2c6b22' if m.lucro >= 0 else '#D7261E' }}">{{ ('%.1f' | format(m.lucro / 1000)) | replace('.', ',') }}k</text>
+        {% endfor %}
+      </svg>
+      <p class="m"><span style="color:#c99300">■</span> vendas · <span style="color:#3E8E2F">■</span> lucro · <span style="color:#D7261E">■</span> prejuízo · * mês em andamento</p></div>
+  </div>
+
+  {% if pe.configurado %}
+  <div class="sec"><h2>Ponto de equilíbrio · {{ pe.produto.nome }}</h2>
+    <div class="bx pe"><div style="min-width:190px"><small class="m">Investimento</small><big>R$ {{ pe.invest | brl }}</big><span class="m">{{ '{:,}'.format(pe.qtd).replace(',', '.') }} un · custo R$ {{ pe.custo_un | brl }}/un</span></div>
+      <div style="flex:1">{% set pct = [100, (pe.vendidas / pe.precisa * 100) if pe.precisa else 0] | min %}
+        <b>{{ '✓ Investimento pago!' if pe.pago else 'Faltam ' ~ '{:,}'.format(pe.faltam).replace(',', '.') ~ ' unidades para empatar' }}</b>
+        <div class="bar"><i style="width:{{ pct }}%"></i></div>
+        <span class="m">Vendidas {{ '{:,}'.format(pe.vendidas).replace(',', '.') }} de {{ '{:,}'.format(pe.precisa).replace(',', '.') }} necessárias (a R$ {{ pe.preco | brl }}/un) desde {{ pe.desde | dbr }}.
+        Vendendo todas: {{ 'lucro' if pe.lucro_tudo >= 0 else 'prejuízo' }} de <b>R$ {{ pe.lucro_tudo | brl }}</b>.</span></div></div></div>
+  {% endif %}
+
+  <div class="sec"><h2>Vendas por dia</h2>
+    {% set W = 790 %}{% set H = 110 %}{% set nd = dia | length %}
+    <svg viewBox="0 0 {{ W }} {{ H + 16 }}" width="100%">
+      {% for x in dia %}{% set bwd = (W / (nd if nd else 1)) %}{% set h = x.total / maxd * H %}
+        <rect x="{{ loop.index0 * bwd + 1 }}" y="{{ H - h }}" width="{{ [bwd - 2, 1] | max }}" height="{{ h }}" fill="#F6B400" rx="1.5"/>
+        {% if loop.first or loop.last or loop.index0 % ((nd // 6) or 1) == 0 %}<text x="{{ loop.index0 * bwd + bwd / 2 }}" y="{{ H + 13 }}" font-size="9" text-anchor="middle" fill="#7d6550">{{ x.dia[8:10] }}/{{ x.dia[5:7] }}</text>{% endif %}
+      {% endfor %}
+    </svg></div>
+
+  <div class="g2">
+    <div class="sec"><h2>Por produto</h2><table><tr><th>Produto</th><th class="n">Qtd</th><th class="n">R$</th></tr>
+      {% for x in produto %}<tr><td>{{ x.nome }}</td><td class="n">{% if x.un_caixa > 1 %}{{ x.qtd // x.un_caixa }} cx{% if x.qtd % x.un_caixa %} + {{ x.qtd % x.un_caixa }}{% endif %}{% else %}{{ x.qtd }}{% endif %}</td><td class="n">{{ x.total | brl }}</td></tr>{% endfor %}</table></div>
+    <div class="sec"><h2>Por canal</h2><table><tr><th>Canal</th><th class="n">Pedidos</th><th class="n">R$</th></tr>
+      {% for x in canal %}<tr><td>{{ x.nome }}</td><td class="n">{{ x.n }}</td><td class="n">{{ x.total | brl }}</td></tr>{% endfor %}</table></div>
+    <div class="sec"><h2>Por rota</h2><table><tr><th>Rota</th><th class="n">Pedidos</th><th class="n">R$</th></tr>
+      {% for x in rota %}<tr><td>{{ x.nome }}</td><td class="n">{{ x.n }}</td><td class="n">{{ x.total | brl }}</td></tr>{% endfor %}</table></div>
+    <div class="sec"><h2>Melhores clientes</h2><table><tr><th>Cliente</th><th class="n">Pedidos</th><th class="n">R$</th></tr>
+      {% for x in clientes %}<tr><td>{{ x.nome }}</td><td class="n">{{ x.n }}</td><td class="n">{{ x.total | brl }}</td></tr>{% endfor %}</table></div>
+    <div class="sec"><h2>A receber (maiores saldos)</h2><table><tr><th>Cliente</th><th>Vence</th><th class="n">R$</th></tr>
+      {% for x in devedores %}<tr><td>{{ x.nome }}</td><td class="{{ 'm' }}" style="{{ 'color:#D7261E;font-weight:700' if x.venc < gerado[:10] }}">{{ x.venc | dbr }}</td><td class="n">{{ x.v | brl }}</td></tr>{% else %}<tr><td colspan="3" class="m">Nada em aberto 🎉</td></tr>{% endfor %}</table></div>
+    <div class="sec"><h2>Estoque agora</h2><table><tr><th>Produto</th><th class="n">Saldo</th></tr>
+      {% for x in estoque %}<tr><td>{{ x.nome }}</td><td class="n">{% if x.un_caixa > 1 %}{{ x.saldo // x.un_caixa }} cx{% if x.saldo % x.un_caixa %} + {{ x.saldo % x.un_caixa }}{% endif %} <span class="m">({{ x.saldo }} un)</span>{% else %}{{ x.saldo }}{% endif %}</td></tr>{% endfor %}</table></div>
+  </div>
+  <div class="foot">{{ c.selo }} · {{ c.slogan }} · Documento gerencial interno, sem valor fiscal.</div>
+</div>
+{% if auto %}<script>setTimeout(()=>print(),500)</script>{% endif %}
+</body></html>

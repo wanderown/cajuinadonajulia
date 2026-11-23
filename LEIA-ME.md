@@ -15,13 +15,27 @@ Pedidos, espelho, produção por lote, estoque, clientes no mapa, rotas, entrega
 Área da equipe: `https://SEU-DOMINIO/` · Área do cliente: `https://SEU-DOMINIO/cliente`
 
 ## Acessos da demonstração
-| Quem | PIN | Vê |
-|---|---|---|
-| Lira (dono) | 1234 | tudo |
-| Ana · vendas | 1111 | pedidos, clientes, rotas (desconto até 5%) |
-| Zé · produção | 2222 | produção, lotes, estoque |
-| João · entregas | 3333 | tela de entregador no celular com GPS |
-| Caixa da feira | 4444 | só o caixa de feira (funciona offline) |
+Entra com **usuário, e-mail ou CPF + senha**.
+
+| Quem | Usuário | Senha | Vê |
+|---|---|---|---|
+| Lira (dono) | `lira` | `1234` | tudo |
+| Ana · vendas | `ana` | `1111` | pedidos, clientes, rotas (desconto até 5%) |
+| Zé · produção | `ze` | `2222` | produção, lotes, estoque |
+| João · entregas | `joao` | `3333` | tela de entregador no celular com GPS |
+| Caixa da feira | `feira` | `4444` | só o caixa de feira (funciona offline) |
+
+Quem já usava o sistema com PIN: o usuário é o primeiro nome (sem acento) e a senha é o PIN antigo. Troque em **Conta › Trocar minha senha**.
+
+### Recuperar senha (código por e-mail e WhatsApp)
+- **E-mail:** configure no Railway as variáveis abaixo (exemplo Gmail com "senha de app"):
+  - `CAJU_SMTP_HOST` = `smtp.gmail.com`
+  - `CAJU_SMTP_PORT` = `587`
+  - `CAJU_SMTP_USER` = `seuemail@gmail.com`
+  - `CAJU_SMTP_PASS` = `senha de app de 16 letras`
+  - `CAJU_SMTP_FROM` = `Cajuína Dona Júlia <seuemail@gmail.com>`
+- **WhatsApp automático:** só com a API oficial do WhatsApp (token em Configurações). Sem ela, o administrador usa **Equipe › Editar › Gerar código de acesso** e manda pelo botão do WhatsApp.
+- **Modo demonstração:** o código aparece na própria tela.
 
 **Cliente de teste:** telefone `(86) 90000-0001` (Empório Sertão Vivo). No modo demo o código de 6 dígitos aparece na tela.
 
