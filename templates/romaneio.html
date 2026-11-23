@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8"><title>Romaneio de carga</title>
+<style>
+@page{size:A4;margin:12mm}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,system-ui,sans-serif;color:#2B1B14;font-size:12.5px;padding:16px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.h{display:flex;align-items:center;gap:14px;border-bottom:3px solid #2B1B14;padding-bottom:10px;margin-bottom:12px}
+.h img{height:60px}.h h1{font-size:22px;flex:1}.h span{color:#7d6550;font-size:12px}
+.sum{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}.sum div{background:#F6B400;border-radius:8px;padding:8px 14px;font-weight:800}
+.sum div b{font-size:18px;display:block}
+.p{border:1px solid #e6d8bf;border-radius:8px;padding:10px 12px;margin-bottom:10px;page-break-inside:avoid}
+.p .t{display:flex;justify-content:space-between;font-weight:800;font-size:14px}
+.p .a{color:#7d6550;margin:2px 0 6px}
+table{width:100%;border-collapse:collapse}td{padding:3px 4px;border-bottom:1px dotted #e6d8bf}
+.n{text-align:right}.ck{width:16px;height:16px;border:1.5px solid #2B1B14;display:inline-block;border-radius:3px;vertical-align:middle}
+.c{background:#FFE0DC;color:#D7261E;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:800}
+.bar{position:fixed;top:10px;right:10px}.bar button{background:#D7261E;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:800;cursor:pointer}
+@media print{.bar{display:none}}
+</style></head><body>
+<div class="bar"><button onclick="print()">Imprimir</button></div>
+<div class="h"><img src="/static/logo.png"><h1>Romaneio de carga · {{ ps|length }} entrega(s)</h1><span>{{ agora[8:10] }}/{{ agora[5:7] }}/{{ agora[:4] }} {{ agora[11:16] }}</span></div>
+<div class="sum">{% for nome, q in tot.items() %}<div>{{ nome }}<b>{{ q }} un</b></div>{% endfor %}</div>
+{% for p in ps %}<div class="p"><div class="t"><span><span class="ck"></span> {{ loop.index }}. #{{ p.numero }} · {{ p.cliente or 'Sem cliente' }}</span>
+  <span>{% if p.aberto > 0.009 and p.condicao == 'vista' %}<span class="c">COBRAR R$ {{ p.aberto | brl }}</span>{% elif p.aberto > 0.009 %}a prazo · vence {{ p.vencimento | dbr }}{% else %}pago{% endif %}</span></div>
+  <div class="a">{{ p.endereco }} · {{ p.bairro }} · {{ p.cidade }} · {{ p.telefone | tel }}{% if p.rota %} · rota {{ p.rota }}{% endif %}</div>
+  <table>{% for i in p.itens %}<tr><td>{{ i.descricao }}</td><td>{% for l in i.lotes %}{{ l.codigo }} {% endfor %}</td><td class="n"><b>{{ i.qtd }}</b> un</td></tr>{% endfor %}</table>
+  {% if p.obs %}<div style="margin-top:4px"><b>Obs:</b> {{ p.obs }}</div>{% endif %}</div>{% endfor %}
+</body></html>

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F6B400"><title>Cajuína Dona Júlia — Área do cliente</title>
+<link rel="manifest" href="/static/manifest-cliente.json"><link rel="icon" href="/static/icon-192.png"><link rel="apple-touch-icon" href="/static/icon-192.png">
+<style>
+:root{--ylw:#F6B400;--red:#D7261E;--ink:#2B1B14;--mut:#7d6550;--line:#EEDDBA;--cream:#FFF9EC;--leaf:#3E8E2F}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--cream);color:var(--ink);font-size:15px;padding-bottom:170px}
+button,input{font:inherit;color:inherit}button{cursor:pointer;border:none;background:none}
+input{width:100%;border:1px solid var(--line);border-radius:12px;padding:13px;background:#fff;font-size:17px;outline:none}input:focus{border-color:var(--ylw)}
+label{display:block;font-size:13px;font-weight:700;color:var(--mut);margin:14px 0 6px}
+.hd{background:var(--ylw);border-bottom:5px solid var(--red);text-align:center;padding:16px 16px 14px;padding-top:max(16px,env(safe-area-inset-top))}
+.hd img{height:96px}.hd .s{font-weight:900;color:var(--red);font-size:16px;margin-top:2px}.hd .t{font-size:13px;font-weight:600;margin-top:2px}
+.hd.mini{display:flex;align-items:center;gap:10px;text-align:left;padding:10px 14px}.hd.mini img{height:46px}.hd.mini b{display:block;font-size:16px}.hd.mini span{font-size:12.5px}
+.hd.mini button{margin-left:auto;border:1.5px solid var(--ink);border-radius:9px;padding:5px 10px;font-weight:800;font-size:13px}
+.w{max-width:640px;margin:0 auto;padding:16px}
+.card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px}
+.btn{background:var(--red);color:#fff;border-radius:14px;padding:15px;font-weight:800;font-size:16px;width:100%;display:flex;justify-content:center;align-items:center;gap:8px;text-decoration:none}
+.btn.y{background:var(--ylw);color:var(--ink)}.btn.g{background:var(--leaf)}.btn.gh{background:#fff;color:var(--ink);border:1px solid var(--line)}.btn.sm{padding:9px 12px;font-size:14px;border-radius:10px;width:auto}
+.btn:disabled{opacity:.45}
+.cod{display:flex;gap:8px}.cod input{text-align:center;font-size:24px;font-weight:900;letter-spacing:6px}
+.mut{color:var(--mut)}.small{font-size:13px}.red{color:var(--red)}.grn{color:var(--leaf)}.b{font-weight:800}
+.k2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.k{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;border-top:4px solid var(--ylw)}.k.r{border-top-color:var(--red)}
+.k small{display:block;font-size:12px;color:var(--mut);font-weight:700}.k b{display:block;font-size:21px;font-weight:900}.k span{display:block;font-size:12px;color:var(--mut)}
+.ped{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 0;border-bottom:1px solid #f3e8d2}
+.ped b{display:block}.ped small{color:var(--mut);font-size:12.5px}
+.pill{display:inline-block;padding:3px 9px;border-radius:12px;font-size:11.5px;font-weight:800;white-space:nowrap}
+.p-ok{background:#E3F2DD;color:#2c6b22}.p-warn{background:#FFF1C2;color:#8a5a00}.p-bad{background:#FFE0DC;color:var(--red)}.p-off{background:#eee;color:#888}.p-k{background:var(--ink);color:var(--ylw)}
+.prod{display:flex;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid #f3e8d2}
+.prod img{width:70px;height:70px;border-radius:12px;object-fit:cover}.prod .i{flex:1}.prod b{display:block}.prod small{color:var(--mut);font-size:12.5px}.prod .p{color:var(--red);font-weight:900}
+.q{display:flex;align-items:center;gap:6px}.q button{width:34px;height:34px;border-radius:9px;background:#F3E6C9;font-weight:900;font-size:18px}.q b{min-width:28px;text-align:center}
+.q .cx{width:auto;padding:0 8px;font-size:12px}
+.bar{position:fixed;left:0;right:0;bottom:calc(58px + env(safe-area-inset-bottom));padding:10px 14px 6px;background:linear-gradient(transparent,var(--cream) 30%);z-index:10}
+.nav{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);display:flex;justify-content:space-around;padding:8px 0 calc(8px + env(safe-area-inset-bottom));z-index:9}
+.nav button{font-size:12px;font-weight:700;color:var(--mut);display:flex;flex-direction:column;align-items:center;gap:2px}.nav button i{font-style:normal;font-size:20px}.nav button.on{color:var(--red)}
+.tl{display:flex;gap:12px;align-items:flex-start;padding:7px 0}.tl i{width:16px;height:16px;border-radius:50%;border:3px solid var(--line);flex:none;margin-top:2px}
+.tl i.ok{background:var(--leaf);border-color:var(--leaf)}.tl i.now{background:var(--ylw);border-color:var(--red)}.tl b{display:block;font-size:14px}.tl small{color:var(--mut);font-size:12.5px}
+.pix{text-align:center}.pix img{width:220px;height:220px;image-rendering:pixelated;margin:8px auto;display:block}
+textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:11px;height:76px;resize:none;color:var(--mut)}
+.toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 18px;border-radius:12px;z-index:99;font-weight:700;box-shadow:0 8px 24px #0004;max-width:90%}
+.toast.e{background:var(--red)}
+.demo{background:#FFF1C2;border:1px dashed #d9a400;border-radius:12px;padding:10px;margin-top:12px;font-size:13.5px}
+.aviso{background:var(--ink);color:var(--ylw);border-radius:12px;padding:10px 12px;font-size:13px;font-weight:600;margin-bottom:12px}
+</style></head>
+<body><div id="app"></div>
+<script>
+'use strict';
+const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const brl = v => 'R$ ' + (Number(v) || 0).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+const dbr = s => s ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}` : '';
+const hm = s => s ? s.slice(11, 16) : '';
+const ST = { novo: ['Recebido', 'p-warn'], separando: ['Em separação', 'p-warn'], em_rota: ['A caminho', 'p-k'], entregue: ['Entregue', 'p-ok'], cancelado: ['Cancelado', 'p-off'] };
+let D = null, aba = 'inicio', cart = {};
+async function api(u, body) { const r = await fetch(u, body !== undefined ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.erro || 'Erro, tente de novo'); return j; }
+function toast(m, e) { const d = document.createElement('div'); d.className = 'toast' + (e ? ' e' : ''); d.textContent = m; document.body.append(d); setTimeout(() => d.remove(), 3500); }
+
+async function start() { try { D = await api('/api/c/me'); } catch (e) { D = null; } D ? tela() : login(); }
+function login() {
+  let tel = '';
+  $('#app').innerHTML = `<div class="hd"><img src="/static/logo-contorno.png" alt="Cajuína Dona Júlia"><div class="s">Sabor que é Piauí!</div><div class="t">Área do cliente e revendedor</div></div>
+    <div class="w"><div class="card"><h2 style="font-size:20px">Entrar</h2><p class="mut small" style="margin-top:4px">Sem senha: informe seu WhatsApp e digite o código que enviaremos.</p>
+    <label>Seu WhatsApp (com DDD)</label><input id="tel" type="tel" inputmode="tel" placeholder="(86) 9 0000-0000" autocomplete="tel">
+    <button class="btn" id="env" style="margin-top:14px">Receber código</button><div id="passo2"></div></div>
+    <p class="mut small" style="text-align:center">Ainda não é cliente? Fale com a gente no WhatsApp.</p></div>`;
+  $('#env').onclick = async () => {
+    tel = $('#tel').value; const b = $('#env'); b.disabled = true;
+    try {
+      const r = await api('/api/c/codigo', { telefone: tel });
+      $('#passo2').innerHTML = `<label>Código de 6 dígitos</label><div class="cod"><input id="cod" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></div>
+        ${r.codigo_demo ? `<div class="demo">🧪 <b>Modo demonstração:</b> seu código é <b style="font-size:18px;letter-spacing:2px">${r.codigo_demo}</b><br><span class="small">No uso real ele chega pelo WhatsApp.</span></div>` : r.aviso ? `<div class="demo">${esc(r.aviso)} <a href="https://wa.me/55${esc(r.whats_loja)}?text=${encodeURIComponent('Olá! Quero meu código de acesso à área do cliente.')}" target="_blank">Pedir no WhatsApp</a></div>` : '<p class="small mut" style="margin-top:8px">Enviamos o código para o seu WhatsApp.</p>'}
+        <button class="btn g" id="ent" style="margin-top:14px">Entrar</button>`;
+      $('#cod').focus();
+      $('#ent').onclick = async () => { try { await api('/api/c/entrar', { telefone: tel, codigo: $('#cod').value }); start(); } catch (e) { toast(e.message, 1); } };
+      $('#cod').oninput = e => { if (e.target.value.length === 6) $('#ent').click(); };
+    } catch (e) { toast(e.message, 1); } b.disabled = false;
+  };
+}
+function tela() {
+  const c = D.cliente;
+  $('#app').innerHTML = `<div class="hd mini"><img src="/static/logo-contorno.png" alt=""><div><b>Olá, ${esc(c.nome.split(' ')[0] === c.nome ? c.nome : c.nome)}</b><span>${c.tipo === 'revenda' ? 'Revendedor' : 'Cliente'}${D.rota ? ' · rota ' + esc(D.rota.nome) + (D.rota.dia ? ' (' + esc(D.rota.dia) + ')' : '') : ''}</span></div><button id="sair">Sair</button></div>
+    <div class="w" id="c"></div><div class="nav">${[['inicio', '🏠', 'Início'], ['pedidos', '📦', 'Pedidos'], ['comprar', '🛒', 'Comprar'], ['pagar', '💠', 'Pagar']].map(([k, i, n]) => `<button data-a="${k}" class="${k === aba ? 'on' : ''}"><i>${i}</i>${n}</button>`).join('')}</div>`;
+  $('#sair').onclick = async () => { await api('/api/c/sair', {}); D = null; login(); };
+  $('.nav').onclick = e => { const b = e.target.closest('[data-a]'); if (b) { aba = b.dataset.a; tela(); window.scrollTo(0, 0); } };
+  ({ inicio, pedidos, comprar, pagar })[aba]($('#c'));
+}
+const pagPill = p => p.status === 'cancelado' ? '' : p.aberto <= 0.009 ? '<span class="pill p-ok">pago</span>' : p.vencido ? `<span class="pill p-bad">vencido ${dbr(p.vencimento).slice(0, 5)}</span>` : `<span class="pill p-warn">vence ${dbr(p.vencimento).slice(0, 5)}</span>`;
+function linhaPed(p) { return `<div class="ped" data-p="${p.id}"><div><b>Pedido #${p.numero} · ${dbr(p.criado_em).slice(0, 5)}</b><small>${p.itens.map(i => i.qtd + '× ' + esc(i.descricao)).join(', ')}</small></div><div style="text-align:right"><span class="pill ${ST[p.status][1]}">${ST[p.status][0]}</span><br>${pagPill(p)}</div></div>`; }
+function inicio(el) {
+  const ult = D.pedidos.find(p => p.status !== 'cancelado');
+  const ativo = D.pedidos.find(p => ['novo', 'separando', 'em_rota'].includes(p.status));
+  el.innerHTML = `${D.loja.online_msg ? `<div class="aviso">📢 ${esc(D.loja.online_msg)}</div>` : ''}
+    <div class="k2"><div class="k ${D.aberto > 0 ? 'r' : ''}"><small>Em aberto</small><b class="${D.aberto > 0 ? 'red' : ''}">${brl(D.aberto)}</b><span>${D.aberto > 0 ? 'toque em Pagar' : 'tudo em dia ✓'}</span></div><div class="k"><small>Compras em ${new Date().getFullYear()}</small><b>${brl(D.ano.total)}</b><span>${D.ano.n} pedidos</span></div></div>
+    ${D.aberto > 0 ? `<button class="btn y" id="pg" style="margin-bottom:12px">💠 Pagar com Pix · ${brl(D.aberto)}</button>` : ''}
+    ${ativo ? `<div class="card"><b>Acompanhe seu pedido #${ativo.numero}</b>${timeline(ativo)}<button class="btn gh sm" data-p="${ativo.id}" style="margin-top:6px">Ver detalhes</button></div>` : ''}
+    ${ult ? `<div class="card"><b>Último pedido · #${ult.numero}</b><p class="small mut" style="margin:4px 0 10px">${ult.itens.map(i => i.qtd + '× ' + esc(i.descricao)).join(', ')} · ${brl(ult.total)}</p>
+      <div style="display:flex;gap:8px"><a class="btn gh sm" href="/espelho/${ult.id}" target="_blank" style="flex:1">⬇ Espelho</a><button class="btn g sm" id="rep" style="flex:1">↻ Repetir pedido</button></div></div>` : ''}
+    <div class="card"><b>Meus pedidos</b>${D.pedidos.slice(0, 5).map(linhaPed).join('') || '<p class="mut small">Nenhum pedido ainda</p>'}</div>
+    <a class="btn gh" href="https://wa.me/55${esc(D.loja.whatsapp)}" target="_blank" style="color:#137a42">💬 Falar com a Cajuína Dona Júlia</a>
+    <p class="mut small" style="text-align:center;margin-top:12px">${esc(D.loja.selo || '')}</p>`;
+  $('#pg') && ($('#pg').onclick = () => { aba = 'pagar'; tela(); });
+  $('#rep') && ($('#rep').onclick = () => { cart = {}; ult.itens.forEach(i => { if (D.produtos.some(p => p.id === i.produto_id)) cart[i.produto_id] = (cart[i.produto_id] || 0) + i.qtd; }); aba = 'comprar'; tela(); toast('Itens do último pedido na sacola. Confira e envie!'); });
+  el.onclick = e => { const p = e.target.closest('[data-p]'); if (p) detalhe(+p.dataset.p); };
+}
+function timeline(p) {
+  const steps = [['Pedido recebido', p.criado_em], ['Separado' + (p.itens[0]?.lotes?.length ? ' · lote ' + p.itens.flatMap(i => i.lotes.map(l => l.codigo)).filter((v, i, a) => a.indexOf(v) === i).join(', ') : ''), p.separado_em], ['Saiu para entrega' + (p.entregador ? ' · ' + esc(p.entregador) : ''), p.saiu_em], ['Entregue', p.entregue_em]];
+  const atual = steps.findIndex(s => !s[1]);
+  return steps.map((s, i) => `<div class="tl"><i class="${s[1] ? 'ok' : i === atual ? 'now' : ''}"></i><div><b>${s[0]}</b><small>${s[1] ? dbr(s[1]).slice(0, 5) + ' · ' + hm(s[1]) : i === atual ? 'em andamento' : ''}</small></div></div>`).join('');
+}
+function pedidos(el) {
+  el.innerHTML = `<div class="card"><b>Meus pedidos</b>${D.pedidos.map(linhaPed).join('') || '<p class="mut small">Nenhum pedido</p>'}</div>`;
+  el.onclick = e => { const p = e.target.closest('[data-p]'); if (p) detalhe(+p.dataset.p); };
+}
+function detalhe(id) {
+  const p = D.pedidos.find(x => x.id === id);
+  $('#c').innerHTML = `<button class="btn gh sm" id="volta" style="margin-bottom:12px">← Voltar</button><div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:18px">Pedido #${p.numero}</b><span class="pill ${ST[p.status][1]}">${ST[p.status][0]}</span></div>
+    <p class="small mut">${dbr(p.criado_em)} · ${pagPill(p)}</p>${p.status !== 'cancelado' ? timeline(p) : ''}</div>
+    <div class="card">${p.itens.map(i => `<div class="ped"><div><b>${i.qtd}× ${esc(i.descricao)}</b><small>lote ${i.lotes.map(l => esc(l.codigo)).join(', ')}</small></div><b>${brl(i.total)}</b></div>`).join('')}
+      <div class="ped"><span>Frete</span><b>${p.frete ? brl(p.frete) : 'grátis'}</b></div>${p.desconto ? `<div class="ped"><span>Desconto</span><b class="grn">− ${brl(p.desconto)}</b></div>` : ''}<div class="ped" style="border:none"><b>Total</b><b style="font-size:19px">${brl(p.total)}</b></div></div>
+    <div style="display:flex;gap:8px"><a class="btn gh" href="/espelho/${p.id}" target="_blank">⬇ Espelho em PDF</a>${p.aberto > 0.009 ? `<a class="btn y" href="${esc(p.link)}" target="_blank">💠 Pagar ${brl(p.aberto)}</a>` : ''}</div>`;
+  $('#volta').onclick = tela; window.scrollTo(0, 0);
+}
+function comprar(el) {
+  const sub = () => D.produtos.reduce((a, p) => a + (cart[p.id] || 0) * p.preco, 0);
+  const draw = () => {
+    const n = Object.values(cart).reduce((a, q) => a + q, 0);
+    el.innerHTML = `${D.loja.online_ativo !== '1' ? '<div class="aviso">Pedidos online pausados no momento. Fale com a gente pelo WhatsApp.</div>' : D.loja.online_msg ? `<div class="aviso">📢 ${esc(D.loja.online_msg)}</div>` : ''}
+      <div class="card">${D.produtos.map(p => `<div class="prod"><img src="${esc(p.foto)}" alt=""><div class="i"><b>${esc(p.nome)}</b><small>${esc(p.descricao)}</small><div class="p">${brl(p.preco)} <span class="mut small">/ ${esc(p.unidade)}</span></div>${!p.disponivel ? '<span class="pill p-off">esgotado</span>' : ''}</div>
+        ${p.disponivel ? `<div><div class="q"><button data-m="${p.id}">−</button><b>${cart[p.id] || 0}</b><button data-p="${p.id}">+</button></div>${p.un_caixa > 1 ? `<div class="q" style="margin-top:4px;justify-content:flex-end"><button class="cx" data-cx="${p.id}">+ caixa (${p.un_caixa})</button></div>` : ''}</div>` : ''}</div>`).join('')}</div>
+      ${n ? `<div class="card"><label style="margin-top:0">Observação (opcional)</label><input id="obs" placeholder="ex.: entregar pela manhã"></div>` : ''}
+      ${n ? `<div class="bar"><button class="btn" id="env"><span>Enviar pedido · ${n} itens</span><span>${brl(sub())}</span></button><p class="small mut" style="text-align:center;margin-top:4px">${D.cliente.prazo_dias ? `Faturado em ${D.cliente.prazo_dias} dias` : 'Pagamento na entrega ou Pix'}${D.rota ? ` · entrega rota ${esc(D.rota.nome)} (${esc(D.rota.dia)})` : ''}</p></div>` : ''}`;
+    $('#env') && ($('#env').onclick = async () => {
+      $('#env').disabled = true;
+      try { const p = await api('/api/c/pedido', { itens: Object.entries(cart).filter(([, q]) => q > 0).map(([produto_id, qtd]) => ({ produto_id: +produto_id, qtd })), obs: $('#obs')?.value || '' });
+        cart = {}; D = await api('/api/c/me'); aba = 'inicio'; tela(); toast(`Pedido #${p.numero} enviado! 🎉`); } catch (e) { toast(e.message, 1); $('#env').disabled = false; }
+    });
+  };
+  el.onclick = e => { const b = e.target.closest('button'); if (!b) return; const id = b.dataset.p || b.dataset.m || b.dataset.cx; if (!id) return; const p = D.produtos.find(x => x.id == id);
+    cart[id] = Math.max(0, (cart[id] || 0) + (b.dataset.p ? 1 : b.dataset.m ? -1 : p.un_caixa)); draw(); };
+  draw();
+}
+function pagar(el) {
+  const ab = D.pedidos.filter(p => p.aberto > 0.009 && p.status !== 'cancelado');
+  el.innerHTML = ab.length ? `<div class="card pix"><b style="font-size:17px">Total em aberto</b><div style="font-size:30px;font-weight:900;margin:4px 0">${brl(D.aberto)}</div>
+    ${D.pix ? `${D.qr ? `<img src="/qr.png?s=6&t=${encodeURIComponent(D.pix)}" alt="QR Pix">` : ''}<textarea readonly>${esc(D.pix)}</textarea><button class="btn g" id="cp" style="margin-top:10px">Copiar código Pix</button>
+      <p class="small mut" style="margin-top:8px">Depois de pagar, mande o comprovante no WhatsApp. A baixa é feita pela equipe.</p>` : '<p class="mut small">Pix ainda não configurado. Fale com a gente no WhatsApp.</p>'}</div>
+    <div class="card"><b>Pedidos em aberto</b>${ab.map(p => `<div class="ped"><div><b>#${p.numero} · ${dbr(p.criado_em).slice(0, 5)}</b><small>vence ${dbr(p.vencimento)}</small></div><div style="text-align:right"><b class="${p.vencido ? 'red' : ''}">${brl(p.aberto)}</b><br><a class="small" href="${esc(p.link)}" target="_blank">pagar só este</a></div></div>`).join('')}</div>
+    <a class="btn gh" href="https://wa.me/55${esc(D.loja.whatsapp)}?text=${encodeURIComponent('Olá! Segue o comprovante do pagamento de ' + D.cliente.nome + '.')}" target="_blank" style="color:#137a42">📎 Enviar comprovante no WhatsApp</a>`
+    : '<div class="card" style="text-align:center"><div style="font-size:40px">🎉</div><b>Tudo pago!</b><p class="mut small">Você não tem valores em aberto.</p></div>';
+  $('#cp') && ($('#cp').onclick = () => { navigator.clipboard?.writeText(D.pix); toast('Código copiado! Cole no app do banco'); });
+}
+start();
+</script></body></html>

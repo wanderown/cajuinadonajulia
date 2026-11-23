@@ -1,0 +1,675 @@
+/* Cajuína Dona Júlia — sistema da equipe */
+'use strict';
+const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const brl = v => 'R$ ' + (Number(v) || 0).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+const num = v => { const s = String(v ?? '').trim(); if (/^-?\d+(\.\d+)?$/.test(s)) return parseFloat(s); const n = parseFloat(s.replace(/\./g, '').replace(',', '.')); return isNaN(n) ? 0 : n; };
+const r2 = v => Math.round((Number(v) || 0) * 100) / 100;
+const dbr = s => s ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}` : '';
+const dm = s => s ? `${s.slice(8, 10)}/${s.slice(5, 7)}` : '';
+const hm = s => s ? s.slice(11, 16) : '';
+const tel = t => { t = String(t || '').replace(/\D/g, ''); return t.length === 11 ? `(${t.slice(0, 2)}) ${t.slice(2, 7)}-${t.slice(7)}` : t.length === 10 ? `(${t.slice(0, 2)}) ${t.slice(2, 6)}-${t.slice(6)}` : t; };
+const inteiro = v => (Number(v) || 0).toLocaleString('pt-BR');
+
+const STATUS = { novo: 'Novo', separando: 'Separando', em_rota: 'Em rota', entregue: 'Entregue', cancelado: 'Cancelado' };
+const CANAL_PILL = { revenda: 'p-rev', encomenda: 'p-enc', online: 'p-onl', whatsapp: 'p-wa', feira: 'p-fei', balcao: 'p-bal' };
+const FORMAS = { pix: 'Pix', dinheiro: 'Dinheiro', boleto: 'Boleto', credito: 'Crédito', debito: 'Débito', transferencia: 'Transferência' };
+const MENU = [
+  ['painel', 'Painel', 'relatorios'], ['pedidos', 'Pedidos', 'pedidos'], ['producao', 'Produção', 'producao'], ['estoque', 'Estoque', 'estoque'],
+  ['clientes', 'Clientes', 'clientes'], ['rotas', 'Rotas & mapa', 'rotas'], ['entregas', 'Minhas entregas', 'entregas'], ['feira', 'Feira', 'feira'],
+  ['financeiro', 'Financeiro', 'financeiro'], ['equipe', 'Equipe', 'equipe'], ['config', 'Configurações', 'config'],
+];
+const S = { me: null, b: null, poll: null };
+
+async function api(url, opts = {}) {
+  const o = { method: opts.method || (opts.body !== undefined ? 'POST' : 'GET'), headers: {} };
+  if (opts.body !== undefined) { o.headers['Content-Type'] = 'application/json'; o.body = JSON.stringify(opts.body); }
+  let r; try { r = await fetch(url, o); } catch (e) { throw new Error('Sem conexão com a internet'); }
+  if (r.status === 401 && !url.includes('login')) { S.me = null; render(); throw new Error('Faça login novamente'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.erro || 'Erro ' + r.status);
+  return j;
+}
+function toast(m, t = '') { const d = document.createElement('div'); d.className = t; d.textContent = m; $('#toast').append(d); setTimeout(() => d.remove(), 3300); }
+const ok = m => toast(m, 'ok'), err = e => toast(e.message || e, 'err');
+function modal({ title, body, foot = '', wide = false }) {
+  const bg = document.createElement('div'); bg.className = 'mb-bg';
+  bg.innerHTML = `<div class="modal ${wide ? 'wide' : ''}"><div class="mh"><h3>${title}</h3><button class="x" data-x>×</button></div><div class="mc">${body}</div>${foot ? `<div class="mf">${foot}</div>` : ''}</div>`;
+  bg.addEventListener('click', e => { if (e.target === bg || e.target.closest('[data-x]')) bg.remove(); });
+  $('#modal-root').append(bg); const m = $('.modal', bg); m.close = () => bg.remove(); return m;
+}
+const pode = p => S.me?.perms?.includes(p);
+const cfg = k => S.b?.config?.[k];
+const prod = id => S.b.produtos.find(p => p.id == id);
+
+// ---------------------------------------------------------------- inicialização
+async function start() {
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => { });
+  try { S.me = await api('/api/me'); } catch (e) { }
+  if (S.me) await carregar();
+  window.addEventListener('hashchange', render);
+  window.addEventListener('online', () => feiraSync());
+  render();
+}
+async function carregar() { S.b = await api('/api/base'); }
+function viewPadrao() { const m = MENU.find(([, , p]) => pode(p)); return m ? m[0] : 'painel'; }
+function render() {
+  clearInterval(S.poll); S.poll = null; S.geoWatch && navigator.geolocation?.clearWatch(S.geoWatch);
+  if (!S.me) return telaLogin();
+  let v = location.hash.slice(1) || viewPadrao();
+  const item = MENU.find(m => m[0] === v);
+  if (!item || !pode(item[2])) v = viewPadrao();
+  if (v === 'entregas' && (pode('pedidos') || pode('rotas')) && !location.hash) v = viewPadrao();
+  S.view = v;
+  $('#app').innerHTML = `${cfg('demo') === '1' ? '<div class="demo">MODO DEMONSTRAÇÃO · clientes, pedidos e valores fictícios</div>' : ''}
+   <div class="top"><img src="/static/logo-contorno.png" alt=""><nav class="nav">${MENU.filter(m => pode(m[2]) && !(m[0] === 'entregas' && pode('rotas'))).map(([k, n]) => `<a href="#${k}" class="${k === v ? 'on' : ''}">${n}</a>`).join('')}</nav>
+   <div class="me"><span class="nm">${esc(S.me.nome)}</span><button id="sair">Sair</button></div></div><main id="main"></main>`;
+  $('#sair').onclick = async () => { await api('/api/logout', { body: {} }); S.me = null; location.hash = ''; render(); };
+  ({ painel: telaPainel, pedidos: telaPedidos, producao: telaProducao, estoque: telaEstoque, clientes: telaClientes, rotas: telaRotas,
+     entregas: telaEntregas, feira: telaFeira, financeiro: telaFinanceiro, equipe: telaEquipe, config: telaConfig })[v]($('#main'));
+}
+function telaLogin() {
+  let pin = '';
+  $('#app').innerHTML = `<div class="login"><div class="box"><img src="/static/logo.png" alt="Cajuína Dona Júlia"><h3>Sistema de gestão</h3><p class="mut small">Digite seu PIN</p>
+    <div class="pin">${'<i></i>'.repeat(4)}</div><div class="pad">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 'C', 0, '⏎'].map(k => `<button data-k="${k}">${k}</button>`).join('')}</div>
+    <p class="small mt" id="lerr">&nbsp;</p><a href="/cliente" class="small mut" style="display:block;margin-top:8px">Sou cliente → área do cliente</a></div></div>`;
+  const pins = $$('.pin i'), draw = () => pins.forEach((p, i) => p.classList.toggle('f', i < pin.length));
+  const go = async () => { try { S.me = await api('/api/login', { body: { pin } }); await carregar(); location.hash = ''; render(); } catch (e) { pin = ''; draw(); $('#lerr').innerHTML = `<b class="red">${esc(e.message)}</b>`; } };
+  const k = x => { if (x === 'C') pin = ''; else if (x === '⏎') return go(); else if (pin.length < 8) pin += x; draw(); if (pin.length >= 4 && x !== 'C') { clearTimeout(k.t); k.t = setTimeout(() => pin.length >= 4 && go(), 650); } };
+  $$('.pad button').forEach(b => b.onclick = () => k(b.dataset.k));
+  document.onkeydown = e => { if (S.me) return (document.onkeydown = null); if (/^\d$/.test(e.key)) k(e.key); if (e.key === 'Enter') k('⏎'); if (e.key === 'Backspace') k('C'); };
+}
+
+// ---------------------------------------------------------------- painel
+function periodoChips(id, cb, ini = 'mes') {
+  const h = new Date(), iso = d => new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10), hoje = S.b.hoje;
+  const P = { hoje: ['Hoje', hoje, hoje], sem: ['7 dias', iso(new Date(h - 6 * 864e5)), hoje], mes: ['Este mês', hoje.slice(0, 8) + '01', hoje],
+    ant: ['Mês passado', iso(new Date(h.getFullYear(), h.getMonth() - 1, 1)), iso(new Date(h.getFullYear(), h.getMonth(), 0))], d90: ['90 dias', iso(new Date(h - 89 * 864e5)), hoje] };
+  const el = $(id); el.innerHTML = Object.entries(P).map(([k, [n]]) => `<button data-p="${k}" class="${k === ini ? 'on' : ''}">${n}</button>`).join('');
+  el.onclick = e => { const b = e.target.closest('[data-p]'); if (!b) return; $$('button', el).forEach(x => x.classList.toggle('on', x === b)); cb(P[b.dataset.p][1], P[b.dataset.p][2]); };
+  cb(P[ini][1], P[ini][2]);
+}
+const hbars = (lst, lab, val, fmt = brl, cor) => { const mx = Math.max(1, ...lst.map(val)); return lst.map(x => `<div class="hb"><span>${esc(lab(x))}</span><div class="m"><i style="width:${val(x) / mx * 100}%${cor ? ';background:' + cor(x) : ''}"></i></div><b class="right">${fmt(val(x))}</b></div>`).join('') || '<p class="mut">Sem dados</p>'; };
+function telaPainel(main) {
+  const h = new Date().getHours(), saud = h < 12 ? 'BOM DIA' : h < 18 ? 'BOA TARDE' : 'BOA NOITE';
+  main.innerHTML = `<div class="hero"><div class="t"><small>${saud}, ${esc(S.me.nome.split(' ')[0].toUpperCase())}</small><h1>${esc(cfg('slogan') || 'Sabor que é Piauí!')}</h1><p id="hero-p">Carregando…</p>
+    <span class="seal">● ${esc(cfg('selo'))}</span></div><img src="/static/fotos/estande.jpg" alt=""></div>
+    <div class="row wrap mb"><div class="chips" id="per"></div><span class="sp"></span><a class="btn ghost sm" id="csv">⬇ Planilha</a>${pode('pedidos') ? '<a class="btn" href="#pedidos" id="np">+ Novo pedido</a>' : ''}</div>
+    <div id="pn"></div>`;
+  $('#np') && ($('#np').onclick = e => { e.preventDefault(); location.hash = 'pedidos'; setTimeout(novoPedido, 150); });
+  periodoChips('#per', async (de, ate) => {
+    $('#csv').href = `/api/relatorio.csv?de=${de}&ate=${ate}`;
+    const p = await api(`/api/painel?de=${de}&ate=${ate}`);
+    const garrafas = p.produto.filter(x => /cajuína/i.test(x.nome)).reduce((a, x) => a + x.qtd, 0);
+    $('#hero-p').textContent = `${dbr(de)} a ${dbr(ate)}: ${inteiro(garrafas)} garrafas vendidas, ${p.a_entregar} pedido(s) para entregar e ${brl(p.receber.total)} a receber.`;
+    const mxd = Math.max(1, ...p.dia.map(x => x.total));
+    $('#pn').innerHTML = `<div class="kpis">
+      <div class="kpi"><small>Vendido no período</small><b>${brl(p.vendas)}</b>${p.variacao != null ? `<em class="${p.variacao >= 0 ? 'grn' : 'red'}">${p.variacao >= 0 ? '▲' : '▼'} ${Math.abs(p.variacao)}% vs período anterior</em>` : ''}</div>
+      <div class="kpi k"><small>Pedidos · ticket médio</small><b>${p.pedidos}</b><em>${brl(p.ticket)} por pedido</em></div>
+      <div class="kpi k"><small>Unidades vendidas</small><b>${inteiro(p.unidades)}</b><em>garrafas e potes</em></div>
+      <div class="kpi g"><small>Margem bruta</small><b>${p.vendas ? Math.round((1 - p.cmv / p.vendas) * 100) : 0}%</b><em>custo dos produtos ${brl(p.cmv)}</em></div>
+      <div class="kpi r"><small>A receber (total)</small><b class="red">${brl(p.receber.total)}</b><em class="red">${brl(p.receber.vencido)} vencido · ${p.receber.n_vencidos} pedido(s)</em></div></div>
+      <div class="g3" style="grid-template-columns:1.3fr 1fr 1fr">
+       <div class="card"><h3 class="mb">Vendas por dia</h3><div class="bars">${p.dia.map(x => `<i style="height:${x.total / mxd * 100}%" title="${dm(x.dia)} · ${brl(x.total)}"></i>`).join('')}</div>
+         <h3 class="mb mt">Por canal</h3>${hbars(p.canal, x => S.b.canais[x.canal] || x.canal, x => x.total)}</div>
+       <div class="card"><h3 class="mb">⚠ Atenção</h3>${p.alertas.map(a => `<div class="alert"><i class="${a.nivel}"></i><span class="sp">${esc(a.texto)}</span><span class="pill ${a.nivel === 'bad' ? 'p-bad' : 'p-warn'}">${esc(a.extra)}</span></div>`).join('') || '<p class="mut">Tudo em ordem 🎉</p>'}
+         <h3 class="mb mt">Estoque</h3><table>${p.estoque.map(e => `<tr><td>${esc(e.nome)}</td><td class="n b ${e.minimo && e.saldo <= e.minimo ? 'red' : ''}">${inteiro(e.saldo)}</td><td class="n small mut">${e.dias ? '~' + e.dias + ' dias' : ''}</td></tr>`).join('')}</table></div>
+       <div class="card"><h3 class="mb">Melhores clientes</h3>${hbars(p.clientes, x => x.nome, x => x.total)}
+         <h3 class="mb mt">Por rota</h3>${hbars(p.rota, x => x.nome, x => x.total)}
+         <h3 class="mb mt">Por produto</h3>${hbars(p.produto, x => x.nome, x => x.qtd, v => inteiro(v) + ' un')}</div></div>`;
+  });
+}
+
+// ---------------------------------------------------------------- pedidos
+function pillCanal(p) { return `<span class="pill ${CANAL_PILL[p.canal] || ''}">${esc(S.b.canais[p.canal] || p.canal)}</span>`; }
+function itensTxt(p) { return p.itens.map(i => { const cx = prod(i.produto_id)?.un_caixa || 1; return `<li>${cx > 1 && i.qtd % cx === 0 ? (i.qtd / cx) + ' cx × ' + cx : i.qtd + ' ×'} ${esc(i.descricao)}</li>`; }).join(''); }
+function pagPill(p) { return p.status === 'cancelado' ? '<span class="pill p-off">cancelado</span>' : p.aberto <= 0.009 ? '<span class="pill p-ok">pago</span>' : p.vencido ? `<span class="pill p-bad">vencido ${dm(p.vencimento)}</span>` : p.condicao === 'prazo' ? `<span class="pill p-warn">a prazo · ${dm(p.vencimento)}</span>` : `<span class="pill p-warn">a receber</span>`; }
+function telaPedidos(main) {
+  let filtro = 'todos';
+  main.innerHTML = `<div class="row wrap mb"><h2 class="sp">Pedidos e encomendas</h2><div class="chips" id="pf">${[['todos', 'Todos'], ['revenda', 'Revendedores'], ['consumidor', 'Consumidores'], ['online', 'Área do cliente']].map(([k, n]) => `<button data-f="${k}" class="${k === filtro ? 'on' : ''}">${n}</button>`).join('')}</div>
+    <input id="busca" placeholder="Buscar nº ou cliente" style="width:200px"><button class="btn" id="np">+ Novo pedido</button></div><div class="kb" id="kb"></div>`;
+  $('#np').onclick = () => novoPedido();
+  $('#pf').onclick = e => { const b = e.target.closest('[data-f]'); if (!b) return; filtro = b.dataset.f; $$('#pf button').forEach(x => x.classList.toggle('on', x === b)); draw(S.ps || []); };
+  $('#busca').onkeydown = async e => { if (e.key !== 'Enter') return; const r = await api('/api/pedidos?q=' + encodeURIComponent(e.target.value)); if (r[0]) detalhePedido(r[0].id); else toast('Nada encontrado', 'err'); };
+  const f = p => filtro === 'todos' || (filtro === 'revenda' ? p.cliente_tipo === 'revenda' : filtro === 'online' ? p.canal === 'online' : p.cliente_tipo !== 'revenda');
+  const draw = ps => {
+    S.ps = ps;
+    const cols = [['novo', 'Novos'], ['separando', 'Separando'], ['em_rota', 'Em rota'], ['entregue', 'Entregues (3 dias)']];
+    $('#kb').innerHTML = cols.map(([st, n]) => { const l = ps.filter(p => p.status === st && f(p)); return `<div class="kcol"><h4>${n}<em>${l.length}</em></h4>${l.map(cardPed).join('') || '<div class="empty small">—</div>'}</div>`; }).join('');
+  };
+  $('#kb').onclick = e => { const a = e.target.closest('[data-act]'); if (a) { e.stopPropagation(); return acao(+a.dataset.id, a.dataset.act); } const c = e.target.closest('[data-pid]'); if (c) detalhePedido(+c.dataset.pid); };
+  const load = async () => { try { draw(await api('/api/pedidos?ativos=1')); } catch (e) { } };
+  load(); S.poll = setInterval(load, 15000);
+}
+function cardPed(p) {
+  const prox = { novo: ['separando', 'Separar'], separando: ['em_rota', 'Saiu p/ entrega'], em_rota: ['entregue', 'Entregue'] }[p.status];
+  return `<div class="kc ${p.vencido ? 'venc' : p.cliente_tipo === 'revenda' ? 'rev' : p.canal === 'online' ? 'onl' : ''}" data-pid="${p.id}">
+    <div class="h"><b>#${p.numero} · ${esc(p.cliente || 'Feira/balcão')}</b></div><div class="row" style="gap:4px;margin-top:3px">${pillCanal(p)}${p.rota ? `<span class="pill p-bal">${esc(p.rota)}</span>` : ''}</div>
+    <ul>${itensTxt(p)}</ul><div class="f"><span>${brl(p.total)}</span>${pagPill(p)}</div>
+    ${p.entregador ? `<div class="small mut">🚚 ${esc(p.entregador)}</div>` : ''}
+    ${prox && (pode('pedidos') || pode('rotas')) ? `<div class="acts"><button class="btn sm ghost" data-act="espelho" data-id="${p.id}">Espelho</button><button class="btn sm ${p.status === 'em_rota' ? 'g' : 'k'}" data-act="${prox[0]}" data-id="${p.id}">${prox[1]}</button></div>` : ''}</div>`;
+}
+async function acao(id, act) {
+  try {
+    if (act === 'espelho') return window.open('/espelho/' + id, '_blank');
+    if (act === 'em_rota') return despachar([id]);
+    if (act === 'entregue') return entregar(await api('/api/pedidos/' + id));
+    await api(`/api/pedidos/${id}/status`, { body: { status: act } }); ok('Atualizado'); render();
+  } catch (e) { err(e); }
+}
+function despachar(ids) {
+  const m = modal({ title: `Saída para entrega (${ids.length})`, body: `<label>Entregador</label><div class="chips" id="ents">${S.b.entregadores.map(e => `<button data-e="${e.id}">${esc(e.nome)}</button>`).join('')}<button data-e="">Retirada / outro</button></div>` });
+  $('#ents', m).onclick = async e => {
+    const b = e.target.closest('[data-e]'); if (!b) return;
+    try { for (const id of ids) await api(`/api/pedidos/${id}/status`, { body: { status: 'em_rota', entregador_id: b.dataset.e || null } }); m.close(); ok('Saiu para entrega'); render(); } catch (er) { err(er); }
+  };
+}
+function entregar(p, aposOk) {
+  let foto = '';
+  const m = modal({
+    title: `Entregar #${p.numero} · ${esc(p.cliente || '')}`, body: `${p.aberto > 0.009 ? (p.condicao === 'vista' ? `<div class="banner">💰 Cobrar <b>${brl(p.aberto)}</b> na entrega</div>` : `<p class="mb">A prazo · vence <b>${dbr(p.vencimento)}</b> (${brl(p.aberto)})</p>`) : '<p class="mb grn b">✓ Já está pago</p>'}
+    ${p.aberto > 0.009 ? `<label style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="rec" style="width:auto" ${p.condicao === 'vista' ? 'checked' : ''}> Recebi o pagamento agora</label>
+    <div class="chips mt" id="fr">${['pix', 'dinheiro', 'credito', 'debito'].map(f => `<button data-f="${f}" class="${f === (p.forma || 'pix') ? 'on' : ''}">${FORMAS[f]}</button>`).join('')}</div>` : ''}
+    <label class="mt">Foto do canhoto assinado (opcional)</label><input type="file" accept="image/*" capture="environment" id="ft"><img id="prev" style="max-width:100%;margin-top:8px;border-radius:10px;display:none">`,
+    foot: `<button class="btn g lg" id="ok">✓ Confirmar entrega</button>`
+  });
+  let forma = p.forma || 'pix';
+  $('#fr', m) && ($('#fr', m).onclick = e => { const b = e.target.closest('[data-f]'); if (!b) return; forma = b.dataset.f; $$('#fr button', m).forEach(x => x.classList.toggle('on', x === b)); });
+  $('#ft', m).onchange = async e => { foto = await reduzir(e.target.files[0], 900, .6); $('#prev', m).src = foto; $('#prev', m).style.display = 'block'; };
+  $('#ok', m).onclick = async () => {
+    try { await api(`/api/pedidos/${p.id}/status`, { body: { status: 'entregue', canhoto: foto, receber: $('#rec', m)?.checked, forma } }); m.close(); ok('Entrega confirmada'); aposOk ? aposOk() : render(); } catch (e) { err(e); }
+  };
+}
+function reduzir(arq, max = 900, q = .7) {
+  return new Promise((res, rej) => { const fr = new FileReader(), img = new Image(); fr.onload = () => img.src = fr.result; img.onload = () => { const s = Math.min(1, max / Math.max(img.width, img.height)); const cv = document.createElement('canvas'); cv.width = img.width * s; cv.height = img.height * s; cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); res(cv.toDataURL('image/jpeg', q)); }; img.onerror = rej; fr.readAsDataURL(arq); });
+}
+async function detalhePedido(id) {
+  const p = await api('/api/pedidos/' + id);
+  const m = modal({
+    title: `Pedido #${p.numero}`, wide: true, body: `<div class="g3 mb"><div><label>Cliente</label><b>${esc(p.cliente || 'Feira/balcão')}</b><div class="small mut">${esc(p.endereco || '')} ${esc(p.cidade || '')}<br>${tel(p.telefone)}</div></div>
+      <div><label>Situação</label><b>${STATUS[p.status]}</b> ${pillCanal(p)}<div class="small mut">criado ${dbr(p.criado_em)} ${hm(p.criado_em)} por ${esc(p.usuario)}${p.entregador ? '<br>entregador: ' + esc(p.entregador) : ''}</div></div>
+      <div><label>Pagamento</label>${pagPill(p)}<div class="small mut">${FORMAS[p.forma] || p.forma} · ${p.condicao === 'prazo' ? 'a prazo' : 'à vista'} · vence ${dbr(p.vencimento)}<br>tabela ${esc(p.tabela || '')}${p.rota ? ' · rota ' + esc(p.rota) : ''}</div></div></div>
+      <table><tr><th>Produto</th><th>Lote (validade)</th><th class="n">Qtd</th><th class="n">Unit.</th><th class="n">Total</th></tr>
+      ${p.itens.map(i => `<tr><td><b>${esc(i.descricao)}</b></td><td class="small">${i.lotes.map(l => `${esc(l.codigo)} <span class="mut">(${dm(l.validade)}/${l.validade.slice(2, 4)})</span>${i.lotes.length > 1 ? ' ×' + l.qtd : ''}`).join('<br>')}</td><td class="n">${i.qtd}</td><td class="n">${brl(i.unit)}</td><td class="n">${brl(i.total)}</td></tr>`).join('')}
+      <tr><td colspan="4">Subtotal</td><td class="n">${brl(p.subtotal)}</td></tr><tr><td colspan="4">Frete</td><td class="n">${p.frete ? brl(p.frete) : 'grátis'}</td></tr>${p.desconto ? `<tr><td colspan="4">Desconto</td><td class="n">−${brl(p.desconto)}</td></tr>` : ''}
+      <tr><td colspan="4"><b>Total</b></td><td class="n"><b>${brl(p.total)}</b></td></tr>${p.pago ? `<tr><td colspan="4">Recebido</td><td class="n grn">${brl(p.pago)}</td></tr>` : ''}</table>
+      ${p.recebimentos.length ? `<p class="small mut mt">${p.recebimentos.map(r => `${dbr(r.data)} · ${FORMAS[r.forma] || r.forma} · ${brl(r.valor)} (${esc(r.usuario)})`).join('<br>')}</p>` : ''}
+      ${p.obs ? `<p class="mt"><b>Obs:</b> ${esc(p.obs)}</p>` : ''}${p.cancel_motivo ? `<p class="mt red"><b>Cancelado:</b> ${esc(p.cancel_motivo)}</p>` : ''}
+      ${p.canhoto ? `<p class="mt"><b>Canhoto:</b><br><img src="${p.canhoto}" style="max-width:260px;border-radius:10px;margin-top:4px"></p>` : ''}
+      <p class="small mut mt">Link do cliente: <a href="${esc(p.link)}" target="_blank">${esc(p.link)}</a></p>`,
+    foot: `${p.status !== 'cancelado' && pode('pedidos_cancelar') ? '<button class="btn ghost" id="canc" style="color:var(--red)">Cancelar</button>' : ''}<span class="sp"></span>
+      ${p.telefone ? `<button class="btn ghost" id="wa" style="color:#137a42">WhatsApp</button>${p.aberto > 0.009 ? '<button class="btn ghost" id="cob" style="color:var(--red)">Cobrar</button>' : ''}` : ''}
+      ${p.aberto > 0.009 && p.status !== 'cancelado' && (pode('financeiro') || pode('pedidos')) ? '<button class="btn y" id="rec">Receber</button>' : ''}
+      <a class="btn k" href="/espelho/${p.id}?imprimir=1" target="_blank">⬇ Espelho PDF</a>`
+  });
+  const wa = async t => { const r = await api(`/api/pedidos/${p.id}/whatsapp?tipo=${t}`); window.open(r.link, '_blank'); };
+  $('#wa', m) && ($('#wa', m).onclick = () => wa('pedido')); $('#cob', m) && ($('#cob', m).onclick = () => wa('cobranca'));
+  $('#rec', m) && ($('#rec', m).onclick = () => { m.close(); receberModal(p); });
+  $('#canc', m) && ($('#canc', m).onclick = async () => {
+    const mot = prompt('Motivo do cancelamento:'); if (mot === null) return;
+    try { await api(`/api/pedidos/${p.id}/status`, { body: { status: 'cancelado', motivo: mot, estornar: p.pago > 0 && confirm('Este pedido tem pagamento registrado. Estornar e cancelar?') } }); m.close(); ok('Pedido cancelado e estoque devolvido'); render(); } catch (e) { err(e); }
+  });
+}
+function receberModal(p, depois) {
+  let forma = 'pix';
+  const m = modal({ title: `Receber #${p.numero} · ${esc(p.cliente || '')}`, body: `<label>Valor</label><input id="v" inputmode="decimal" value="${p.aberto.toFixed(2).replace('.', ',')}" style="font-size:20px">
+    <label class="mt">Forma</label><div class="chips" id="fr">${Object.entries(FORMAS).map(([k, n]) => `<button data-f="${k}" class="${k === forma ? 'on' : ''}">${n}</button>`).join('')}</div>
+    <label class="mt">Data</label><input type="date" id="dt" value="${S.b.hoje}">`, foot: `<button class="btn g" id="ok">Confirmar recebimento</button>` });
+  $('#fr', m).onclick = e => { const b = e.target.closest('[data-f]'); if (!b) return; forma = b.dataset.f; $$('#fr button', m).forEach(x => x.classList.toggle('on', x === b)); };
+  $('#ok', m).onclick = async () => { try { await api(`/api/pedidos/${p.id}/receber`, { body: { valor: num($('#v', m).value), forma, data: $('#dt', m).value } }); m.close(); ok('Recebimento registrado'); depois ? depois() : render(); } catch (e) { err(e); } };
+}
+
+// ---------------------------------------------------------------- novo pedido
+async function novoPedido(clienteId) {
+  const clientes = (await api('/api/clientes')).filter(c => c.ativo);
+  const st = { cliente_id: clienteId || '', tabela_id: '', rota_id: '', itens: {}, desconto: 0, frete: null, condicao: 'vista', prazo: 0, forma: 'pix', obs: '', data_entrega: '' };
+  const m = modal({
+    title: 'Novo pedido', wide: true, body: `<div class="np"><div>
+      <div class="g2"><div><label>Cliente</label><input id="cb" list="cl" placeholder="Digite o nome… (vazio = venda balcão)"><datalist id="cl">${clientes.map(c => `<option value="${esc(c.nome)}">`).join('')}</datalist></div>
+      <div><label>Tabela de preço</label><select id="tb">${S.b.tabelas.map(t => `<option value="${t.id}">${esc(t.nome)}</option>`).join('')}</select></div></div>
+      <div class="small mt" id="cinfo"></div>
+      <div class="mt" id="prods"></div>
+      <div class="g2 mt"><div><label>Observação</label><input id="obs" placeholder="ex.: entregar gelada, nota fiscal…"></div><div><label>Entrega prevista</label><input type="date" id="de"></div></div></div>
+      <div><div class="resumo" id="res"></div></div></div>`
+  });
+  const cli = () => clientes.find(c => c.id == st.cliente_id);
+  const precoDe = pid => prod(pid).precos[st.tabela_id] ?? prod(pid).precos[cfg('tabela_padrao') || 1] ?? 0;
+  const sub = () => r2(Object.entries(st.itens).reduce((a, [pid, q]) => a + q * precoDe(pid), 0));
+  const rota = () => S.b.rotas.find(r => r.id == st.rota_id);
+  const frete = () => st.frete !== null ? st.frete : rota() ? (rota().frete_gratis_acima && sub() >= rota().frete_gratis_acima ? 0 : rota().frete) : 0;
+  const total = () => r2(Math.max(0, sub() + frete() - st.desconto));
+  const setCli = c => {
+    st.cliente_id = c ? c.id : ''; st.tabela_id = c?.tabela_id || cfg('tabela_padrao') || 1; st.rota_id = c?.rota_id || '';
+    st.condicao = c?.prazo_dias ? 'prazo' : 'vista'; st.prazo = c?.prazo_dias || 0; st.frete = null;
+    $('#tb', m).value = st.tabela_id;
+    $('#cinfo', m).innerHTML = c ? `${c.tipo === 'revenda' ? '<span class="pill p-rev">REVENDEDOR</span>' : '<span class="pill p-enc">consumidor</span>'} ${esc(c.cidade)} · rota <b>${esc(c.rota || '—')}</b> · prazo <b>${c.prazo_dias || 0} dias</b>
+      ${c.aberto > 0 ? ` · em aberto <b class="${c.vencido > 0 ? 'red' : ''}">${brl(c.aberto)}</b>${c.limite ? ` de ${brl(c.limite)}` : ''}` : ''}` : '<span class="mut">Venda sem cliente cadastrado (balcão / fazenda)</span>';
+    drawProds(); drawRes();
+  };
+  const drawProds = () => {
+    $('#prods', m).innerHTML = S.b.produtos.filter(p => p.ativo).map(p => `<div class="prodline"><img src="${esc(p.foto)}" alt=""><div class="i"><b>${esc(p.nome)}</b><small>${brl(precoDe(p.id))} · estoque ${inteiro(p.saldo)}</small></div>
+      <div class="qty">${p.un_caixa > 1 ? `<button class="cx" data-cx="${p.id}">+1 cx (${p.un_caixa})</button>` : ''}<button data-m="${p.id}">−</button><input data-q="${p.id}" inputmode="numeric" value="${st.itens[p.id] || ''}" placeholder="0"><button data-p="${p.id}">+</button></div></div>`).join('');
+  };
+  const drawRes = () => {
+    const linhas = Object.entries(st.itens).filter(([, q]) => q > 0);
+    $('#res', m).innerHTML = `<h3 class="mb">Resumo</h3>${linhas.map(([pid, q]) => `<div class="l small"><span>${q} × ${esc(prod(pid).nome)}</span><span>${brl(q * precoDe(pid))}</span></div>`).join('') || '<p class="mut small">Nenhum item</p>'}
+      <hr style="border:none;border-top:1px solid var(--line);margin:8px 0"><div class="l"><span>Subtotal</span><b>${brl(sub())}</b></div>
+      <div class="l"><span>Rota</span><select id="rt" style="width:150px;padding:4px 6px"><option value="">Retirada</option>${S.b.rotas.map(r => `<option value="${r.id}" ${r.id == st.rota_id ? 'selected' : ''}>${esc(r.nome)}</option>`).join('')}</select></div>
+      <div class="l"><span>Frete</span><input id="fr" style="width:90px;text-align:right;padding:4px 6px" value="${frete().toFixed(2).replace('.', ',')}"></div>
+      <div class="l"><span>Desconto${!pode('precos') && S.me.desconto_max ? ` (até ${S.me.desconto_max}%)` : ''}</span><input id="ds" style="width:90px;text-align:right;padding:4px 6px" value="${st.desconto ? st.desconto.toFixed(2).replace('.', ',') : ''}" placeholder="0,00" ${!pode('precos') && !S.me.desconto_max ? 'disabled' : ''}></div>
+      <div class="l big"><span>Total</span><span>${brl(total())}</span></div>
+      <label class="mt">Pagamento</label><div class="seg" id="cd"><button data-c="vista" class="${st.condicao === 'vista' ? 'on' : ''}">À vista</button><button data-c="prazo" class="${st.condicao === 'prazo' ? 'on' : ''}">A prazo</button></div>
+      ${st.condicao === 'prazo' ? `<div class="l mt"><span>Prazo (dias)</span><input id="pz" style="width:70px;text-align:right;padding:4px 6px" value="${st.prazo}"></div>` : ''}
+      <div class="chips mt" id="fm">${['pix', 'dinheiro', 'boleto', 'credito', 'transferencia'].map(f => `<button data-f="${f}" class="${f === st.forma ? 'on' : ''}" style="padding:5px 10px;font-size:12px">${FORMAS[f]}</button>`).join('')}</div>
+      ${st.condicao === 'vista' ? `<label class="mt" style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="pg" style="width:auto"> Já recebi o pagamento</label>` : ''}
+      <button class="btn lg full mt" id="ok" ${linhas.length ? '' : 'disabled'}>Criar pedido</button>`;
+    $('#rt', m).onchange = e => { st.rota_id = e.target.value; st.frete = null; drawRes(); };
+    $('#fr', m).onchange = e => { st.frete = num(e.target.value); drawRes(); };
+    $('#ds', m).onchange = e => { st.desconto = num(e.target.value); drawRes(); };
+    $('#pz', m) && ($('#pz', m).onchange = e => st.prazo = parseInt(e.target.value) || 0);
+    $('#cd', m).onclick = e => { const b = e.target.closest('[data-c]'); if (b) { st.condicao = b.dataset.c; if (st.condicao === 'prazo' && !st.prazo) st.prazo = 14; drawRes(); } };
+    $('#fm', m).onclick = e => { const b = e.target.closest('[data-f]'); if (b) { st.forma = b.dataset.f; drawRes(); } };
+    $('#ok', m).onclick = salvar;
+  };
+  const salvar = async () => {
+    const b = $('#ok', m); b.disabled = true;
+    try {
+      const p = await api('/api/pedidos', { body: { cliente_id: st.cliente_id || null, tabela_id: st.tabela_id, rota_id: st.rota_id || null, frete: frete(), desconto: st.desconto,
+        condicao: st.condicao, prazo_dias: st.prazo, forma: st.forma, pago_agora: $('#pg', m)?.checked, obs: $('#obs', m).value, data_entrega: $('#de', m).value,
+        canal: cli() ? (cli().tipo === 'revenda' ? 'revenda' : 'encomenda') : 'balcao', itens: Object.entries(st.itens).filter(([, q]) => q > 0).map(([produto_id, qtd]) => ({ produto_id, qtd })) } });
+      m.close(); ok(`Pedido #${p.numero} criado`); await carregar(); render(); setTimeout(() => detalhePedido(p.id), 250);
+    } catch (e) { err(e); b.disabled = false; }
+  };
+  $('#cb', m).onchange = e => setCli(clientes.find(c => c.nome === e.target.value));
+  $('#tb', m).onchange = e => { st.tabela_id = e.target.value; drawProds(); drawRes(); };
+  $('#prods', m).onclick = e => {
+    const b = e.target.closest('button'); if (!b) return; const id = b.dataset.p || b.dataset.m || b.dataset.cx;
+    const q = st.itens[id] || 0; st.itens[id] = Math.max(0, b.dataset.p ? q + 1 : b.dataset.m ? q - 1 : q + prod(id).un_caixa);
+    $(`[data-q="${id}"]`, m).value = st.itens[id] || ''; drawRes();
+  };
+  $('#prods', m).oninput = e => { const i = e.target.closest('[data-q]'); if (i) { st.itens[i.dataset.q] = parseInt(i.value) || 0; drawRes(); } };
+  setCli(clientes.find(c => c.id == clienteId));
+  if (clienteId) $('#cb', m).value = cli()?.nome || '';
+}
+
+// ---------------------------------------------------------------- produção
+async function telaProducao(main) {
+  const ls = await api('/api/lotes');
+  main.innerHTML = `<div class="row wrap mb"><h2 class="sp">Produção por lote</h2><button class="btn" id="nl">+ Registrar produção</button></div>
+    <div class="banner">🏭 Cada lote registra data, validade e custo. As vendas tiram sempre do lote que vence primeiro, e dá pra saber pra quem cada lote foi vendido.</div>
+    ${ls.map(l => { const tot = l.itens.reduce((a, i) => a + i.qtd, 0), sal = l.itens.reduce((a, i) => a + i.saldo, 0); const dv = l.dias_validade;
+      return `<div class="lote"><div class="h"><b>${esc(l.codigo)}</b><span class="mut">fabricado ${dbr(l.data_fab)} · validade ${dbr(l.validade)}</span>
+      ${sal === 0 ? '<span class="pill p-off">esgotado</span>' : dv < 0 ? '<span class="pill p-bad">VENCIDO</span>' : dv <= 30 ? `<span class="pill p-bad">vence em ${dv} dias</span>` : dv <= 60 ? `<span class="pill p-warn">vence em ${dv} dias</span>` : '<span class="pill p-ok">dentro da validade</span>'}
+      <span class="sp"></span><span class="small mut">${l.caju_kg ? inteiro(l.caju_kg) + ' kg de caju · ' : ''}custo ${brl(l.custo_total)}</span><button class="btn sm ghost" data-r="${l.id}" data-c="${esc(l.codigo)}">Rastrear vendas</button></div>
+      <div class="lbar"><i style="width:${tot ? sal / tot * 100 : 0}%;${dv <= 30 && sal ? 'background:var(--red)' : ''}"></i></div>
+      <div class="row wrap small">${l.itens.map(i => `<span><b>${esc(i.produto)}</b>: ${inteiro(i.saldo)} de ${inteiro(i.qtd)} · ${brl(i.custo_unit)}/un</span>`).join(' · ')}</div></div>`; }).join('') || '<div class="empty">Nenhum lote ainda</div>'}`;
+  $('#nl').onclick = novoLote;
+  main.onclick = async e => {
+    const b = e.target.closest('[data-r]'); if (!b) return;
+    const r = await api(`/api/lotes/${b.dataset.r}/rastreio`);
+    modal({ title: `Rastreio do lote ${esc(b.dataset.c)}`, wide: true, body: `<p class="mb mut">Pra quem foi vendida cada unidade deste lote. Use em caso de reclamação ou recolhimento.</p>
+      ${r.length ? `<table><tr><th>Pedido</th><th>Data</th><th>Cliente</th><th>Cidade</th><th>Produto</th><th class="n">Qtd</th></tr>${r.map(x => `<tr><td>#${x.numero}</td><td>${dbr(x.criado_em)}</td><td>${esc(x.cliente || 'Feira/balcão')}</td><td>${esc(x.cidade || '')}</td><td>${esc(x.produto)}</td><td class="n">${x.qtd}</td></tr>`).join('')}</table>
+      <p class="mt b">${inteiro(r.reduce((a, x) => a + x.qtd, 0))} unidades em ${new Set(r.map(x => x.cliente)).size} cliente(s)</p>` : '<p class="mut">Nenhuma venda deste lote ainda.</p>'}` });
+  };
+}
+function novoLote() {
+  const m = modal({
+    title: 'Registrar produção (novo lote)', body: `<div class="g2"><div><label>Data de fabricação</label><input type="date" id="df" value="${S.b.hoje}"></div><div><label>Caju processado (kg)</label><input id="kg" inputmode="decimal"></div></div>
+    <label class="mt">Quantidades produzidas</label>${S.b.produtos.filter(p => p.ativo).map(p => `<div class="prodline"><img src="${esc(p.foto)}"><div class="i"><b>${esc(p.nome)}</b><small>validade ${p.validade_dias} dias</small></div><input data-q="${p.id}" inputmode="numeric" style="width:100px" placeholder="0"></div>`).join('')}
+    <div class="g2 mt"><div><label>Outros custos (mão de obra, gás…)</label><input id="oc" inputmode="decimal"></div><div><label>Observação</label><input id="ob"></div></div>
+    <p class="small mut mt">Garrafas, tampas, rótulos e potes saem do estoque de insumos automaticamente, pela ficha de cada produto.</p>`,
+    foot: `<button class="btn" id="ok">Salvar lote</button>`
+  });
+  $('#ok', m).onclick = async () => {
+    try { const r = await api('/api/lotes', { body: { data_fab: $('#df', m).value, caju_kg: num($('#kg', m).value), outros_custos: num($('#oc', m).value), obs: $('#ob', m).value, itens: $$('[data-q]', m).map(i => ({ produto_id: i.dataset.q, qtd: parseInt(i.value) || 0 })) } });
+      m.close(); ok('Lote ' + r.codigo + ' registrado'); await carregar(); render(); } catch (e) { err(e); }
+  };
+}
+
+// ---------------------------------------------------------------- estoque
+async function telaEstoque(main) {
+  await carregar();
+  const ls = await api('/api/lotes');
+  const ins = S.b.insumos || [];
+  main.innerHTML = `<h2 class="mb">Estoque</h2><div class="kpis">${S.b.produtos.filter(p => p.ativo).map(p => `<div class="kpi ${p.minimo && p.saldo <= p.minimo ? 'r' : ''}"><small>${esc(p.nome)}</small><b>${inteiro(p.saldo)}</b><em>${p.un_caixa > 1 ? '≈ ' + Math.floor(p.saldo / p.un_caixa) + ' caixas · ' : ''}mínimo ${p.minimo}</em></div>`).join('')}</div>
+    <div class="g2" style="grid-template-columns:1.2fr 1fr;align-items:start"><div class="card"><h3 class="mb">Por lote (sai primeiro o que vence antes)</h3><table><tr><th>Lote</th><th>Produto</th><th>Validade</th><th class="n">Saldo</th><th></th></tr>
+      ${ls.flatMap(l => l.itens.filter(i => i.saldo > 0).map(i => `<tr><td class="b">${esc(l.codigo)}</td><td>${esc(i.produto)}</td><td class="${l.dias_validade <= 30 ? 'red b' : ''}">${dbr(l.validade)}</td><td class="n b">${inteiro(i.saldo)}</td><td class="n">${pode('estoque') ? `<button class="btn sm ghost" data-li="${i.id}" data-n="${esc(l.codigo + ' · ' + i.produto)}" data-s="${i.saldo}">Ajustar</button>` : ''}</td></tr>`)).join('')}</table></div>
+    <div class="card"><div class="row mb"><h3 class="sp">Insumos</h3>${pode('estoque') ? '<button class="btn sm ghost" id="ni">+ Insumo</button>' : ''}</div><table><tr><th>Insumo</th><th class="n">Estoque</th><th class="n">Mín.</th><th class="n">Custo</th><th></th></tr>
+      ${ins.filter(i => i.ativo).map(i => `<tr><td>${esc(i.nome)}</td><td class="n b ${i.estoque <= i.minimo ? 'red' : ''}">${inteiro(Math.round(i.estoque * 100) / 100)} ${esc(i.unidade)}</td><td class="n">${inteiro(i.minimo)}</td><td class="n">${brl(i.custo)}</td>
+      <td class="n">${pode('estoque') ? `<button class="btn sm g" data-in="${i.id}" data-n="${esc(i.nome)}">+ Entrada</button>` : ''}</td></tr>`).join('')}</table>
+      <p class="small mut mt">A produção consome os insumos sozinha, pela ficha técnica de cada produto (Configurações → Produtos).</p></div></div>`;
+  main.onclick = e => {
+    const li = e.target.closest('[data-li]'), ii = e.target.closest('[data-in]');
+    if (li) { const m = modal({ title: 'Ajustar ' + esc(li.dataset.n), body: `<div class="seg mb" id="tp"><button data-t="perda" class="on">Perda / quebra</button><button data-t="contagem">Contagem</button></div><label id="lq">Quantidade perdida</label><input id="q" inputmode="numeric"><label class="mt">Motivo</label><input id="o" placeholder="ex.: garrafas quebradas">`, foot: '<button class="btn" id="ok">Salvar</button>' });
+      let t = 'perda'; $('#tp', m).onclick = e => { const b = e.target.closest('[data-t]'); if (!b) return; t = b.dataset.t; $$('#tp button', m).forEach(x => x.classList.toggle('on', x === b)); $('#lq', m).textContent = t === 'perda' ? 'Quantidade perdida' : `Quantidade contada (sistema: ${li.dataset.s})`; };
+      $('#ok', m).onclick = async () => { try { await api('/api/estoque/ajuste', { body: { lote_item_id: li.dataset.li, tipo: t, qtd: num($('#q', m).value), obs: $('#o', m).value } }); m.close(); ok('Estoque ajustado'); render(); } catch (er) { err(er); } }; }
+    if (ii) { const m = modal({ title: 'Entrada de ' + esc(ii.dataset.n), body: `<div class="g2"><div><label>Quantidade</label><input id="q" inputmode="decimal"></div><div><label>Custo por unidade (opcional)</label><input id="c" inputmode="decimal"></div></div><label class="mt">Observação</label><input id="o" placeholder="fornecedor, nota…">`, foot: '<button class="btn g" id="ok">Salvar</button>' });
+      $('#ok', m).onclick = async () => { try { await api('/api/estoque/ajuste', { body: { insumo_id: ii.dataset.in, tipo: 'entrada', qtd: num($('#q', m).value), custo: num($('#c', m).value), obs: $('#o', m).value } }); m.close(); ok('Entrada registrada'); render(); } catch (er) { err(er); } }; }
+    if (e.target.closest('#ni')) { const m = modal({ title: 'Novo insumo', body: `<label>Nome</label><input id="n"><div class="g3 mt"><div><label>Unidade</label><input id="u" value="un"></div><div><label>Mínimo</label><input id="mi"></div><div><label>Custo</label><input id="cu"></div></div>`, foot: '<button class="btn" id="ok">Criar</button>' });
+      $('#ok', m).onclick = async () => { try { await api('/api/cad/insumos', { body: { nome: $('#n', m).value, unidade: $('#u', m).value, minimo: num($('#mi', m).value), custo: num($('#cu', m).value) } }); m.close(); render(); } catch (er) { err(er); } }; }
+  };
+}
+
+// ---------------------------------------------------------------- clientes
+let LEAF = null;
+function leaflet() {
+  if (window.L) return Promise.resolve(true);
+  if (LEAF) return LEAF;
+  LEAF = new Promise(res => {
+    const c = document.createElement('link'); c.rel = 'stylesheet'; c.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'; document.head.append(c);
+    const s = document.createElement('script'); s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'; s.onload = () => res(true); s.onerror = () => { LEAF = null; res(false); }; document.head.append(s);
+  });
+  return LEAF;
+}
+async function desenharMapa(el, pontos, extra) {
+  if (!(await leaflet())) { el.innerHTML = '<div class="empty">Mapa precisa de internet para carregar.</div>'; return null; }
+  const mp = L.map(el, { scrollWheelZoom: false });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(mp);
+  const bs = [];
+  pontos.filter(p => p.lat && p.lng).forEach(p => {
+    const ic = L.divIcon({ className: '', html: `<div class="mk" style="background:${p.cor}"></div>`, iconSize: [16, 16], iconAnchor: [8, 8] });
+    L.marker([p.lat, p.lng], { icon: ic }).addTo(mp).bindPopup(p.popup); bs.push([p.lat, p.lng]);
+  });
+  extra && extra(mp, bs);
+  if (bs.length) mp.fitBounds(bs, { padding: [30, 30] }); else mp.setView([-6.4, -41.7], 7);
+  return mp;
+}
+async function telaClientes(main) {
+  let modo = telaClientes.modo || 'lista', filtro = 'todos';
+  const cs = await api('/api/clientes');
+  main.innerHTML = `<div class="row wrap mb"><h2 class="sp">Clientes e revendedores</h2><div class="seg" id="md" style="width:200px"><button data-m="lista">Lista</button><button data-m="mapa">Mapa</button></div>
+    <input id="q" placeholder="Buscar…" style="width:200px"><button class="btn" id="nc">+ Cliente</button></div>
+    <div class="chips mb" id="cf">${[['todos', 'Todos'], ['revenda', 'Revendedores'], ['consumidor', 'Consumidores'], ['devendo', 'Devendo'], ['sumidos', 'Sem comprar há 30+ dias']].map(([k, n]) => `<button data-f="${k}" class="${k === filtro ? 'on' : ''}">${n}</button>`).join('')}</div><div id="cc"></div>`;
+  const f = c => (filtro === 'todos' || (filtro === 'devendo' ? c.aberto > 0.009 : filtro === 'sumidos' ? (c.dias_sem_comprar ?? 999) >= 30 : c.tipo === filtro)) && (!$('#q').value || c.nome.toLowerCase().includes($('#q').value.toLowerCase()) || (c.cidade || '').toLowerCase().includes($('#q').value.toLowerCase()));
+  const cor = c => c.vencido > 0 ? '#D7261E' : (c.dias_sem_comprar ?? 999) >= 30 ? '#F6B400' : '#3E8E2F';
+  const draw = () => {
+    $$('#md button').forEach(b => b.classList.toggle('on', b.dataset.m === modo));
+    const l = cs.filter(f);
+    if (modo === 'mapa') {
+      $('#cc').innerHTML = '<div id="mapa"></div><div class="row small mt" style="gap:16px"><span><i class="mk" style="display:inline-block;background:#3E8E2F;width:12px;height:12px"></i> em dia</span><span><i class="mk" style="display:inline-block;background:#D7261E;width:12px;height:12px"></i> com conta vencida</span><span><i class="mk" style="display:inline-block;background:#F6B400;width:12px;height:12px"></i> sem comprar há 30+ dias</span></div>';
+      desenharMapa($('#mapa'), l.map(c => ({ lat: c.lat, lng: c.lng, cor: cor(c), popup: `<b>${esc(c.nome)}</b><br>${esc(c.cidade)} · ${esc(c.rota || '')}<br>${c.aberto > 0 ? 'Em aberto: ' + brl(c.aberto) + '<br>' : ''}Último pedido: ${dbr(c.ultimo) || '—'}<br><a href="https://www.google.com/maps/dir/?api=1&destination=${c.lat},${c.lng}" target="_blank">Como chegar</a>` })),
+        (mp, bs) => { const fz = [num(cfg('lat_fazenda')), num(cfg('lng_fazenda'))]; L.marker(fz, { icon: L.divIcon({ className: '', html: '<div style="font-size:26px">🏭</div>', iconSize: [28, 28], iconAnchor: [14, 14] }) }).addTo(mp).bindPopup('<b>Fazenda Sossego</b>'); bs.push(fz); });
+      return;
+    }
+    $('#cc').innerHTML = `<div class="card"><table class="resp"><tr><th>Cliente</th><th>Cidade · rota</th><th>Tabela</th><th class="n">Prazo</th><th class="n">Em aberto</th><th class="n">Compras no ano</th><th>Último pedido</th></tr>
+      ${l.map(c => `<tr class="click" data-c="${c.id}"><td><b>${esc(c.nome)}</b> ${c.tipo === 'revenda' ? '<span class="pill p-rev">revenda</span>' : ''}${!c.ativo ? ' <span class="pill p-off">inativo</span>' : ''}<div class="small mut">${tel(c.telefone)}</div></td>
+      <td>${esc(c.cidade)}<div class="small mut">${esc(c.rota || '—')}</div></td><td class="small">${esc(c.tabela || '')}</td><td class="n">${c.prazo_dias ? c.prazo_dias + ' d' : 'à vista'}</td>
+      <td class="n b ${c.vencido > 0 ? 'red' : ''}">${c.aberto > 0 ? brl(c.aberto) : '—'}${c.vencido > 0 ? '<div class="small">vencido ' + brl(c.vencido) + '</div>' : ''}</td><td class="n">${brl(c.total_ano)}</td>
+      <td>${c.ultimo ? dbr(c.ultimo) + `<div class="small ${c.dias_sem_comprar >= 30 ? 'red' : 'mut'}">há ${c.dias_sem_comprar} dias</div>` : '—'}</td></tr>`).join('')}</table>${l.length ? '' : '<div class="empty">Nenhum cliente</div>'}</div>`;
+  };
+  $('#md').onclick = e => { const b = e.target.closest('[data-m]'); if (b) { modo = telaClientes.modo = b.dataset.m; draw(); } };
+  $('#cf').onclick = e => { const b = e.target.closest('[data-f]'); if (!b) return; filtro = b.dataset.f; $$('#cf button').forEach(x => x.classList.toggle('on', x === b)); draw(); };
+  $('#q').oninput = () => { clearTimeout(draw.t); draw.t = setTimeout(draw, 200); };
+  $('#nc').onclick = () => editarCliente({ tipo: 'revenda', tabela_id: 2, prazo_dias: 14, ativo: 1 });
+  $('#cc').onclick = e => { const r = e.target.closest('[data-c]'); if (r) fichaCliente(cs.find(c => c.id == r.dataset.c)); };
+  draw();
+}
+async function fichaCliente(c) {
+  const ps = await api('/api/pedidos?cliente_id=' + c.id);
+  const m = modal({
+    title: esc(c.nome), wide: true, body: `<div class="g3 mb"><div><label>Contato</label>${esc(c.contato || '')} ${tel(c.telefone)}<br><span class="small mut">${esc(c.endereco)} · ${esc(c.bairro)} · ${esc(c.cidade)}</span></div>
+      <div><label>Condições</label>Tabela <b>${esc(c.tabela || '')}</b> · rota <b>${esc(c.rota || '—')}</b><br>Prazo ${c.prazo_dias || 0} dias · limite ${c.limite ? brl(c.limite) : '—'}</div>
+      <div><label>Situação</label><b class="${c.vencido > 0 ? 'red' : ''}">${c.aberto > 0 ? brl(c.aberto) + ' em aberto' : 'Nada em aberto'}</b><br><span class="small mut">${c.n_pedidos} pedidos · ${brl(c.total_ano)} no ano</span></div></div>
+      <table><tr><th>Pedido</th><th>Data</th><th>Itens</th><th>Status</th><th class="n">Total</th><th>Pagamento</th></tr>${ps.slice(0, 15).map(p => `<tr class="click" data-p="${p.id}"><td>#${p.numero}</td><td>${dbr(p.criado_em)}</td><td class="small">${p.itens.map(i => i.qtd + '× ' + esc(i.descricao)).join(', ')}</td><td>${STATUS[p.status]}</td><td class="n">${brl(p.total)}</td><td>${pagPill(p)}</td></tr>`).join('')}</table>`,
+    foot: `<button class="btn ghost" id="ed">Editar cadastro</button><button class="btn ghost" id="cod">🔑 Acesso à área do cliente</button><span class="sp"></span>${c.aberto > 0 && pode('financeiro') ? '<button class="btn ghost" id="cob" style="color:var(--red)">Cobrar no WhatsApp</button>' : ''}<button class="btn" id="np">+ Pedido</button>`
+  });
+  $('#ed', m).onclick = () => { m.close(); editarCliente(c); };
+  $('#np', m).onclick = () => { m.close(); location.hash = 'pedidos'; setTimeout(() => novoPedido(c.id), 200); };
+  $('#cob', m) && ($('#cob', m).onclick = async () => { const r = await api(`/api/clientes/${c.id}/whatsapp-cobranca`, { body: {} }); window.open(r.link, '_blank'); });
+  $('#cod', m).onclick = async () => { const r = await api(`/api/c/codigo-equipe/${c.id}`, { body: {} }); window.open(r.link, '_blank'); };
+  $('.mc', m).onclick = e => { const r = e.target.closest('[data-p]'); if (r) detalhePedido(+r.dataset.p); };
+}
+function editarCliente(c) {
+  const sel = (k, lst, vazio) => `<select id="${k}">${vazio ? `<option value="">${vazio}</option>` : ''}${lst.map(x => `<option value="${x.id}" ${x.id == c[k] ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}</select>`;
+  const m = modal({
+    title: c.id ? 'Editar cliente' : 'Novo cliente', wide: true, body: `<div class="g3"><div style="grid-column:span 2"><label>Nome / razão social</label><input id="nome" value="${esc(c.nome || '')}"></div>
+      <div><label>Tipo</label><select id="tipo"><option value="revenda" ${c.tipo === 'revenda' ? 'selected' : ''}>Revendedor</option><option value="consumidor" ${c.tipo !== 'revenda' ? 'selected' : ''}>Consumidor</option></select></div>
+      <div><label>CNPJ / CPF</label><input id="documento" value="${esc(c.documento || '')}"></div><div><label>WhatsApp</label><input id="telefone" value="${esc(tel(c.telefone))}"></div><div><label>Contato</label><input id="contato" value="${esc(c.contato || '')}"></div>
+      <div style="grid-column:span 2"><label>Endereço</label><input id="endereco" value="${esc(c.endereco || '')}"></div><div><label>Bairro</label><input id="bairro" value="${esc(c.bairro || '')}"></div>
+      <div><label>Cidade</label><input id="cidade" value="${esc(c.cidade || '')}"></div><div><label>Rota</label>${sel('rota_id', S.b.rotas, 'Sem rota (retira)')}</div><div><label>Tabela de preço</label>${sel('tabela_id', S.b.tabelas)}</div>
+      <div><label>Prazo (dias, 0 = à vista)</label><input id="prazo_dias" value="${c.prazo_dias || 0}"></div><div><label>Limite de crédito (R$)</label><input id="limite" value="${c.limite || ''}"></div>
+      <div><label>Localização no mapa</label><div class="row"><input id="lat" placeholder="lat" value="${c.lat ?? ''}"><input id="lng" placeholder="lng" value="${c.lng ?? ''}"></div></div></div>
+      <div class="row mt"><button class="btn sm ghost" id="geo">📍 Usar minha localização atual</button><span class="small mut">Útil quando o cadastro é feito na porta do cliente.</span></div>
+      <label class="mt">Observações</label><input id="obs" value="${esc(c.obs || '')}">`,
+    foot: `${c.id ? `<label style="display:flex;gap:6px;align-items:center;margin:0;color:var(--ink)"><input type="checkbox" id="ativo" style="width:auto" ${c.ativo ? 'checked' : ''}> Ativo</label>` : ''}<span class="sp"></span><button class="btn" id="ok">Salvar</button>`
+  });
+  $('#geo', m).onclick = () => navigator.geolocation?.getCurrentPosition(p => { $('#lat', m).value = p.coords.latitude.toFixed(5); $('#lng', m).value = p.coords.longitude.toFixed(5); ok('Localização capturada'); }, () => toast('Não consegui pegar a localização', 'err'));
+  $('#ok', m).onclick = async () => {
+    const d = {}; ['nome', 'tipo', 'documento', 'telefone', 'contato', 'endereco', 'bairro', 'cidade', 'rota_id', 'tabela_id', 'obs'].forEach(k => d[k] = $('#' + k, m).value);
+    d.prazo_dias = parseInt($('#prazo_dias', m).value) || 0; d.limite = num($('#limite', m).value); d.lat = $('#lat', m).value ? num($('#lat', m).value) : null; d.lng = $('#lng', m).value ? num($('#lng', m).value) : null;
+    if ($('#ativo', m)) d.ativo = $('#ativo', m).checked ? 1 : 0;
+    if (!d.nome) return toast('Informe o nome', 'err');
+    try { await api('/api/cad/clientes' + (c.id ? '/' + c.id : ''), { method: c.id ? 'PUT' : 'POST', body: d }); m.close(); ok('Cliente salvo'); render(); } catch (e) { err(e); }
+  };
+}
+
+// ---------------------------------------------------------------- rotas e entregas
+async function telaRotas(main) {
+  const ps = (await api('/api/pedidos?ativos=1')).filter(p => ['novo', 'separando', 'em_rota'].includes(p.status));
+  const fz = `${cfg('lat_fazenda')},${cfg('lng_fazenda')}`;
+  const grupos = S.b.rotas.map(r => ({ r, ps: ps.filter(p => p.rota_id == r.id) })).concat([{ r: { id: 0, nome: 'Retirada / sem rota', dia: '', cor: '#888' }, ps: ps.filter(p => !p.rota_id) }]).filter(g => g.ps.length || g.r.id);
+  main.innerHTML = `<div class="row wrap mb"><h2 class="sp">Rotas, entregas e mapa</h2><a class="btn ghost" href="/romaneio" target="_blank">🖨 Romaneio de tudo em separação/rota</a></div>
+    <div class="g2" style="grid-template-columns:1fr 1.1fr;align-items:start"><div>${grupos.map(g => { const comLoc = g.ps.filter(p => p.lat && p.lng);
+      const maps = comLoc.length ? `https://www.google.com/maps/dir/?api=1&origin=${fz}&destination=${comLoc[comLoc.length - 1].lat},${comLoc[comLoc.length - 1].lng}${comLoc.length > 1 ? '&waypoints=' + comLoc.slice(0, -1).slice(0, 9).map(p => p.lat + ',' + p.lng).join('|') : ''}&travelmode=driving` : '';
+      return `<div class="card mb" style="border-left:6px solid ${g.r.cor}"><div class="row wrap"><h3 class="sp">${esc(g.r.nome)} ${g.r.dia ? `<span class="small mut">· ${esc(g.r.dia)}</span>` : ''}</h3>
+        ${g.r.id ? `<span class="small mut">frete ${g.r.frete ? brl(g.r.frete) : 'grátis'}${g.r.frete_gratis_acima ? ' · grátis acima de ' + brl(g.r.frete_gratis_acima) : ''}</span>` : ''}</div>
+        ${g.ps.length ? `<table class="mt">${g.ps.map(p => `<tr class="click" data-p="${p.id}"><td><input type="checkbox" data-sel="${p.id}" style="width:auto" onclick="event.stopPropagation()"></td><td><b>#${p.numero}</b> ${esc(p.cliente || '')}<div class="small mut">${esc(p.cidade || '')} · ${p.itens.reduce((a, i) => a + i.qtd, 0)} un</div></td><td><span class="pill ${p.status === 'em_rota' ? 'p-ok' : 'p-warn'}">${STATUS[p.status]}</span></td><td class="n">${pagPill(p)}</td></tr>`).join('')}</table>
+        <div class="row wrap mt">${maps ? `<a class="btn sm k" target="_blank" href="${maps}">🗺 Abrir rota no Maps (${comLoc.length} paradas)</a>` : ''}<a class="btn sm ghost" target="_blank" href="/romaneio?ids=${g.ps.map(p => p.id).join(',')}">🖨 Romaneio</a><button class="btn sm ghost" data-desp="${g.ps.filter(p => p.status !== 'em_rota').map(p => p.id).join(',')}">🚚 Despachar todos</button></div>` : '<p class="small mut mt">Sem entregas pendentes</p>'}</div>`; }).join('')}
+      <div class="card"><div class="row mb"><h3 class="sp">Rotas e fretes</h3>${pode('config') || pode('rotas') ? '<button class="btn sm ghost" id="nr">+ Rota</button>' : ''}</div><table><tr><th>Rota</th><th>Dia</th><th class="n">Frete</th><th class="n">Grátis acima</th><th>Tabela</th><th></th></tr>
+        ${S.b.rotas.map(r => `<tr><td><i class="mk" style="display:inline-block;background:${r.cor};width:12px;height:12px"></i> <b>${esc(r.nome)}</b></td><td>${esc(r.dia)}</td><td class="n">${brl(r.frete)}</td><td class="n">${r.frete_gratis_acima ? brl(r.frete_gratis_acima) : '—'}</td><td class="small">${esc(S.b.tabelas.find(t => t.id == r.tabela_id)?.nome || '')}</td><td><button class="btn sm ghost" data-er="${r.id}">✎</button></td></tr>`).join('')}</table></div></div>
+    <div class="card" style="position:sticky;top:70px"><div class="row mb"><h3 class="sp">Mapa ao vivo</h3><span class="small mut" id="vivo"></span></div><div id="mapa"></div></div></div>`;
+  main.onclick = e => {
+    const d = e.target.closest('[data-desp]'); if (d) { const ids = d.dataset.desp.split(',').filter(Boolean).map(Number); if (!ids.length) return toast('Já estão em rota'); return despachar(ids); }
+    const er = e.target.closest('[data-er]'); if (er) return editarRota(S.b.rotas.find(r => r.id == er.dataset.er));
+    if (e.target.closest('#nr')) return editarRota({ cor: '#D7261E', tabela_id: 1 });
+    const p = e.target.closest('[data-p]'); if (p) detalhePedido(+p.dataset.p);
+  };
+  const vivo = await api('/api/mapa');
+  const cores = Object.fromEntries(S.b.rotas.map(r => [r.id, r.cor]));
+  const mp = await desenharMapa($('#mapa'), ps.map(p => ({ lat: p.lat, lng: p.lng, cor: cores[p.rota_id] || '#888', popup: `<b>#${p.numero} ${esc(p.cliente || '')}</b><br>${STATUS[p.status]} · ${brl(p.total)}` })), (mp, bs) => {
+    L.marker(vivo.fazenda, { icon: L.divIcon({ className: '', html: '<div style="font-size:26px">🏭</div>', iconSize: [28, 28], iconAnchor: [14, 14] }) }).addTo(mp).bindPopup('<b>Fazenda Sossego</b>'); bs.push(vivo.fazenda);
+    vivo.entregadores.forEach(e => { L.marker([e.lat, e.lng], { icon: L.divIcon({ className: '', html: '<div style="font-size:26px">🚚</div>', iconSize: [28, 28], iconAnchor: [14, 14] }) }).addTo(mp).bindPopup(`<b>${esc(e.nome)}</b><br>posição às ${hm(e.em)}<br>${e.pedidos.filter(x => x.status === 'entregue').length}/${e.pedidos.length} entregues`); bs.push([e.lat, e.lng]); });
+  });
+  $('#vivo').textContent = vivo.entregadores.length ? `${vivo.entregadores.map(e => '🚚 ' + e.nome + ' · ' + hm(e.em)).join(' · ')}` : 'nenhum entregador transmitindo';
+}
+function editarRota(r) {
+  const m = modal({ title: r.id ? 'Editar rota' : 'Nova rota', body: `<div class="g2"><div><label>Nome</label><input id="nome" value="${esc(r.nome || '')}"></div><div><label>Dia(s) de entrega</label><input id="dia" value="${esc(r.dia || '')}" placeholder="ex.: Sexta"></div>
+    <div><label>Frete (R$)</label><input id="frete" value="${r.frete ?? ''}"></div><div><label>Frete grátis acima de (R$)</label><input id="fg" value="${r.frete_gratis_acima || ''}"></div>
+    <div><label>Tabela de preço padrão</label><select id="tb">${S.b.tabelas.map(t => `<option value="${t.id}" ${t.id == r.tabela_id ? 'selected' : ''}>${esc(t.nome)}</option>`).join('')}</select></div><div><label>Cor no mapa</label><input type="color" id="cor" value="${r.cor || '#D7261E'}" style="height:40px"></div></div>`, foot: '<button class="btn" id="ok">Salvar</button>' });
+  $('#ok', m).onclick = async () => { try { await api('/api/cad/rotas' + (r.id ? '/' + r.id : ''), { method: r.id ? 'PUT' : 'POST', body: { nome: $('#nome', m).value, dia: $('#dia', m).value, frete: num($('#frete', m).value), frete_gratis_acima: num($('#fg', m).value), tabela_id: $('#tb', m).value, cor: $('#cor', m).value } }); m.close(); await carregar(); render(); } catch (e) { err(e); } };
+}
+async function telaEntregas(main) {
+  const load = async () => {
+    const ps = (await api('/api/pedidos?ativos=1')).filter(p => p.status === 'em_rota' && (p.entregador_id === S.me.id || pode('rotas')));
+    main.innerHTML = `<div class="row mb"><h2 class="sp">🚚 Minhas entregas</h2><span class="small" id="gps">📡 GPS…</span></div>
+      ${ps.length > 1 ? `<a class="btn k full mb" target="_blank" href="https://www.google.com/maps/dir/?api=1&destination=${ps[ps.length - 1].lat},${ps[ps.length - 1].lng}&waypoints=${ps.slice(0, -1).map(p => p.lat + ',' + p.lng).join('|')}">🗺 Abrir rota completa no Maps (${ps.length} paradas)</a>` : ''}
+      ${ps.map((p, i) => `<div class="card mb"><div class="row"><b style="font-size:16px">${i + 1}. ${esc(p.cliente || '')}</b><span class="sp"></span>${p.aberto > 0.009 ? (p.condicao === 'vista' ? `<span class="pill p-bad">cobrar ${brl(p.aberto)}</span>` : '<span class="pill p-warn">a prazo</span>') : '<span class="pill p-ok">pago</span>'}</div>
+        <div class="small mut mt">${esc(p.endereco)} · ${esc(p.bairro)} · ${esc(p.cidade)}</div><ul class="small mt" style="margin-left:16px">${itensTxt(p)}</ul>${p.obs ? `<p class="small"><b>Obs:</b> ${esc(p.obs)}</p>` : ''}
+        <div class="row mt"><a class="btn sm ghost" href="tel:${p.telefone}">📞</a><a class="btn sm ghost" target="_blank" href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}">📍 Mapa</a><span class="sp"></span><button class="btn g" data-e="${p.id}">✓ Entregue</button></div></div>`).join('') || '<div class="empty">Nenhuma entrega em rota agora 👍</div>'}
+      <p class="small mut center">Deixe esta tela aberta durante a rota: sua posição aparece no mapa do escritório.</p>`;
+    main.onclick = e => { const b = e.target.closest('[data-e]'); if (b) entregar(ps.find(p => p.id == b.dataset.e), load); };
+    gps();
+  };
+  const gps = () => {
+    if (!navigator.geolocation) return $('#gps').textContent = 'GPS indisponível';
+    let ult = 0;
+    S.geoWatch = navigator.geolocation.watchPosition(async pos => {
+      $('#gps') && ($('#gps').textContent = '📡 transmitindo posição');
+      if (Date.now() - ult < 30000) return; ult = Date.now();
+      try { await api('/api/posicao', { body: { lat: pos.coords.latitude, lng: pos.coords.longitude } }); } catch (e) { }
+    }, () => { $('#gps') && ($('#gps').textContent = '⚠ ative a localização'); }, { enableHighAccuracy: true, maximumAge: 20000 });
+  };
+  load();
+}
+
+// ---------------------------------------------------------------- feira (funciona sem internet)
+const FILA = 'caju_feira_fila';
+const filaGet = () => { try { return JSON.parse(localStorage.getItem(FILA) || '[]'); } catch (e) { return []; } };
+const filaSet = l => { try { localStorage.setItem(FILA, JSON.stringify(l)); } catch (e) { } };
+async function feiraSync() {
+  const l = filaGet(); if (!l.length) return 0;
+  const resto = [];
+  for (const v of l) { try { await api('/api/feira/venda', { body: v }); } catch (e) { if (/conexão/i.test(e.message)) resto.push(v); else toast('Venda offline recusada: ' + e.message, 'err'); } }
+  filaSet(resto); if (l.length > resto.length) ok(`${l.length - resto.length} venda(s) da feira sincronizada(s)`);
+  return resto.length;
+}
+function telaFeira(main) {
+  const tab = cfg('tabela_feira') || 5;
+  const cart = {}; let forma = 'pix', evento = localStorage.getItem('caju_evento') || 'Feira';
+  const precoF = p => p.precos[tab] ?? p.precos[1] ?? 0;
+  const total = () => r2(Object.entries(cart).reduce((a, [id, q]) => a + q * precoF(prod(id)), 0));
+  main.innerHTML = `<div class="row wrap mb"><h2 class="sp">🎪 Caixa de feira</h2><input id="ev" value="${esc(evento)}" style="width:240px" placeholder="Nome do evento"></div><div id="offb"></div>
+    <div class="feira"><div class="fprod">${S.b.produtos.filter(p => p.ativo).map(p => `<button class="fp" data-p="${p.id}"><img src="${esc(p.foto)}" alt=""><div><b>${esc(p.nome)}</b><span>${brl(precoF(p))}</span></div></button>`).join('')}</div>
+    <div class="resumo" id="fr"></div></div><div class="card mt" id="hoje"></div>`;
+  $('#ev').onchange = e => { evento = e.target.value; localStorage.setItem('caju_evento', evento); };
+  const drawOff = () => { const n = filaGet().length; $('#offb').innerHTML = !navigator.onLine || n ? `<div class="off">${!navigator.onLine ? '📵 Sem internet — as vendas ficam guardadas no aparelho' : ''}${n ? ` · ${n} venda(s) aguardando envio` : ''}</div>` : ''; };
+  const draw = () => {
+    const ls = Object.entries(cart).filter(([, q]) => q > 0);
+    $('#fr').innerHTML = `<h3 class="mb">Venda atual</h3>${ls.map(([id, q]) => `<div class="l"><span><button class="btn sm ghost" data-m="${id}">−</button> <b>${q}</b> ${esc(prod(id).nome)}</span><span>${brl(q * precoF(prod(id)))}</span></div>`).join('') || '<p class="mut">Toque nos produtos</p>'}
+      <div class="l big mt"><span>Total</span><span>${brl(total())}</span></div><div class="chips mt" id="fm">${['pix', 'dinheiro', 'credito', 'debito'].map(f => `<button data-f="${f}" class="${f === forma ? 'on' : ''}">${FORMAS[f]}</button>`).join('')}</div>
+      ${forma === 'dinheiro' ? '<label class="mt">Recebido</label><input id="rc" inputmode="decimal"><div class="b mt" id="tc"></div>' : ''}
+      <button class="btn lg full mt" id="ok" ${ls.length ? '' : 'disabled'}>Finalizar venda</button>`;
+    $('#rc') && ($('#rc').oninput = e => { const t = num(e.target.value) - total(); $('#tc').textContent = t > 0 ? 'Troco: ' + brl(t) : ''; });
+  };
+  const hoje = async () => { try { const ps = await api(`/api/pedidos?de=${S.b.hoje}&ate=${S.b.hoje}`); const f = ps.filter(p => p.canal === 'feira' && p.status !== 'cancelado'); $('#hoje').innerHTML = `<h3 class="mb">Hoje na feira</h3><div class="kpis"><div class="kpi"><small>Vendas</small><b>${brl(f.reduce((a, p) => a + p.total, 0))}</b></div><div class="kpi k"><small>Atendimentos</small><b>${f.length}</b></div><div class="kpi g"><small>Unidades</small><b>${f.reduce((a, p) => a + p.itens.reduce((b, i) => b + i.qtd, 0), 0)}</b></div></div>`; } catch (e) { $('#hoje').innerHTML = '<p class="mut">Resumo do dia aparece quando a internet voltar.</p>'; } };
+  main.onclick = async e => {
+    const p = e.target.closest('[data-p]'), mm = e.target.closest('[data-m]'), f = e.target.closest('[data-f]');
+    if (p) { cart[p.dataset.p] = (cart[p.dataset.p] || 0) + 1; draw(); }
+    if (mm) { cart[mm.dataset.m] = Math.max(0, (cart[mm.dataset.m] || 0) - 1); draw(); }
+    if (f) { forma = f.dataset.f; draw(); }
+    if (e.target.id === 'ok') {
+      const venda = { id_local: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), evento, forma, criado_em: null, itens: Object.entries(cart).filter(([, q]) => q > 0).map(([produto_id, qtd]) => ({ produto_id, qtd })) };
+      try { await api('/api/feira/venda', { body: venda }); ok('Venda registrada ' + brl(total())); }
+      catch (er) { if (/conexão/i.test(er.message)) { const d = new Date(); venda.criado_em = new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 19).replace('T', ' '); filaSet(filaGet().concat([venda])); toast('Sem internet: venda guardada no aparelho'); } else return err(er); }
+      Object.keys(cart).forEach(k => delete cart[k]); draw(); drawOff(); hoje();
+    }
+  };
+  draw(); drawOff(); hoje(); feiraSync().then(drawOff);
+  S.poll = setInterval(() => { feiraSync().then(drawOff); }, 20000);
+}
+
+// ---------------------------------------------------------------- financeiro
+function telaFinanceiro(main) {
+  let aba = telaFinanceiro.aba || 'receber';
+  main.innerHTML = `<div class="row wrap mb"><h2 class="sp">Financeiro</h2><div class="chips" id="per"></div></div>
+    <div class="tabs" id="tb">${[['receber', 'Contas a receber'], ['pagar', 'Contas a pagar'], ['resultado', 'Resultado']].map(([k, n]) => `<button data-a="${k}" class="${k === aba ? 'on' : ''}">${n}</button>`).join('')}</div><div id="fn"></div>`;
+  let D = null;
+  const draw = () => {
+    const el = $('#fn');
+    if (aba === 'receber') {
+      const venc = D.receber.filter(r => r.dias > 0), av = D.receber.filter(r => r.dias <= 0);
+      const linha = r => `<tr class="click" data-p="${r.id}"><td><b>${esc(r.cliente || 'Sem cliente')}</b><div class="small mut">pedido #${r.numero} · ${dbr(r.criado_em)}</div></td><td class="${r.dias > 0 ? 'red b' : ''}">${dbr(r.vencimento)}${r.dias > 0 ? `<div class="small">há ${r.dias} dias</div>` : r.dias === 0 ? '<div class="small">hoje</div>' : `<div class="small mut">em ${-r.dias} dias</div>`}</td><td class="n b">${brl(r.aberto)}</td>
+        <td class="n">${r.telefone ? `<button class="btn sm ghost" data-cob="${r.id}" style="color:var(--red)">Cobrar</button> ` : ''}<button class="btn sm g" data-rec="${r.id}">Receber</button></td></tr>`;
+      el.innerHTML = `<div class="kpis"><div class="kpi r"><small>Vencido</small><b class="red">${brl(venc.reduce((a, r) => a + r.aberto, 0))}</b><em>${venc.length} título(s)</em></div><div class="kpi"><small>A vencer</small><b>${brl(av.reduce((a, r) => a + r.aberto, 0))}</b><em>${av.length} título(s)</em></div><div class="kpi g"><small>Recebido no período</small><b>${brl(D.recebido)}</b></div></div>
+        <div class="card"><table class="resp"><tr><th>Cliente</th><th>Vencimento</th><th class="n">Valor</th><th></th></tr>${venc.concat(av).map(linha).join('')}</table>${D.receber.length ? '' : '<div class="empty">Nada a receber 🎉</div>'}</div>`;
+    } else if (aba === 'pagar') {
+      el.innerHTML = `<div class="row mb"><span class="sp"></span><button class="btn" id="nc">+ Conta a pagar</button></div><div class="card"><table class="resp"><tr><th>Descrição</th><th>Vencimento</th><th class="n">Valor</th><th></th></tr>
+        ${D.pagar.map(c => `<tr><td><b>${esc(c.descricao)}</b><div class="small mut">${esc(c.categoria)}</div></td><td class="${!c.pago_em && c.vencimento < S.b.hoje ? 'red b' : ''}">${dbr(c.vencimento)}</td><td class="n b">${brl(c.valor)}</td>
+        <td class="n">${c.pago_em ? `<span class="pill p-ok">pago ${dm(c.pago_em)}</span> <button class="btn sm ghost" data-desf="${c.id}">↺</button>` : `<button class="btn sm g" data-pg="${c.id}">Pagar</button>`}</td></tr>`).join('')}</table></div>`;
+    } else {
+      el.innerHTML = `<div class="kpis"><div class="kpi"><small>Vendas</small><b>${brl(D.vendas)}</b></div><div class="kpi k"><small>Custo dos produtos vendidos</small><b>${brl(D.cmv)}</b></div><div class="kpi r"><small>Despesas</small><b>${brl(D.total_despesas)}</b></div>
+        <div class="kpi g"><small>Lucro estimado</small><b class="${D.lucro >= 0 ? 'grn' : 'red'}">${brl(D.lucro)}</b><em>margem ${D.vendas ? Math.round(D.lucro / D.vendas * 100) : 0}%</em></div></div>
+        <div class="g2"><div class="card"><h3 class="mb">Resultado do período</h3><table><tr><td>(+) Vendas</td><td class="n">${brl(D.vendas)}</td></tr><tr><td>(−) Custo dos produtos (lotes)</td><td class="n red">${brl(D.cmv)}</td></tr>${D.perdas ? `<tr><td>(−) Perdas e quebras</td><td class="n red">${brl(D.perdas)}</td></tr>` : ''}
+          ${D.despesas.map(x => `<tr><td>(−) ${esc(x.categoria)}</td><td class="n red">${brl(x.total)}</td></tr>`).join('')}<tr><td><b>(=) Lucro</b></td><td class="n b ${D.lucro >= 0 ? 'grn' : 'red'}">${brl(D.lucro)}</td></tr></table></div>
+        <div class="card"><h3 class="mb">Recebido por forma</h3>${hbars(D.formas, x => FORMAS[x.forma] || x.forma, x => x.total)}</div></div>`;
+    }
+  };
+  const load = async (de, ate) => { if (de) { load.de = de; load.ate = ate; } D = await api(`/api/financeiro?de=${load.de}&ate=${load.ate}`); draw(); };
+  $('#tb').onclick = e => { const b = e.target.closest('[data-a]'); if (!b) return; aba = telaFinanceiro.aba = b.dataset.a; $$('#tb button').forEach(x => x.classList.toggle('on', x === b)); draw(); };
+  main.addEventListener('click', async e => {
+    const rec = e.target.closest('[data-rec]'), cob = e.target.closest('[data-cob]'), pg = e.target.closest('[data-pg]'), df = e.target.closest('[data-desf]'), p = e.target.closest('[data-p]');
+    if (rec) { e.stopPropagation(); return receberModal(await api('/api/pedidos/' + rec.dataset.rec), () => load()); }
+    if (cob) { e.stopPropagation(); const r = await api(`/api/pedidos/${cob.dataset.cob}/whatsapp?tipo=cobranca`); return window.open(r.link, '_blank'); }
+    if (pg || df) { await api(`/api/contas/${(pg || df).dataset.pg || df.dataset.desf}/pagar`, { body: { desfazer: !!df } }); return load(); }
+    if (e.target.id === 'nc') { const m = modal({ title: 'Nova conta a pagar', body: `<label>Descrição</label><input id="d"><div class="g3 mt"><div><label>Categoria</label><input id="c" list="cats" value="Outros"><datalist id="cats">${['Funcionários', 'Energia', 'Logística', 'Administrativo', 'Manutenção', 'Matéria-prima', 'Embalagens', 'Eventos', 'Impostos', 'Outros'].map(x => `<option value="${x}">`).join('')}</datalist></div><div><label>Valor</label><input id="v"></div><div><label>Vencimento</label><input type="date" id="ve" value="${S.b.hoje}"></div></div>`, foot: '<button class="btn" id="ok">Salvar</button>' });
+      $('#ok', m).onclick = async () => { try { await api('/api/cad/contas_pagar', { body: { descricao: $('#d', m).value, categoria: $('#c', m).value, valor: num($('#v', m).value), vencimento: $('#ve', m).value } }); m.close(); load(); } catch (er) { err(er); } }; return; }
+    if (p) detalhePedido(+p.dataset.p);
+  });
+  periodoChips('#per', load);
+}
+
+// ---------------------------------------------------------------- equipe
+async function telaEquipe(main) {
+  await carregar();
+  main.innerHTML = `<div class="row mb"><h2 class="sp">Equipe e permissões</h2><button class="btn" id="nu">+ Pessoa</button></div>
+    <div class="card mb"><table class="resp"><tr><th>Pessoa</th><th>Função</th><th>Pode</th><th class="n">Desconto máx.</th><th></th></tr>
+    ${S.b.usuarios.map(u => { const ps = JSON.parse(u.permissoes || '[]'); return `<tr><td><b>${esc(u.nome)}</b>${!u.ativo ? ' <span class="pill p-off">inativo</span>' : ''}</td><td>${esc(u.papel)}</td><td class="small">${ps.length === Object.keys(S.b.permissoes).length ? '<b>tudo</b>' : ps.map(p => esc(S.b.permissoes[p])).join(' · ')}</td><td class="n">${u.desconto_max ? u.desconto_max + '%' : '—'}</td><td class="n"><button class="btn sm ghost" data-u="${u.id}">Editar</button></td></tr>`; }).join('')}</table></div>
+    <div class="card"><h3 class="mb">Histórico de ações</h3><div id="log" class="small"></div></div>`;
+  const log = await api('/api/log');
+  $('#log').innerHTML = `<table>${log.slice(0, 80).map(l => `<tr><td>${dbr(l.criado_em)} ${hm(l.criado_em)}</td><td><b>${esc(l.usuario)}</b></td><td>${esc(l.acao)}</td><td class="mut">${esc(l.detalhe)}</td></tr>`).join('')}</table>`;
+  main.onclick = e => { const b = e.target.closest('[data-u]'); if (b) editarUsuario(S.b.usuarios.find(u => u.id == b.dataset.u)); if (e.target.id === 'nu') editarUsuario({ papel: 'vendas', permissoes: JSON.stringify(S.b.papeis.vendas), ativo: 1 }); };
+}
+function editarUsuario(u) {
+  const ps = new Set(JSON.parse(u.permissoes || '[]'));
+  const m = modal({ title: u.id ? 'Editar pessoa' : 'Nova pessoa', wide: true, body: `<div class="g3"><div><label>Nome</label><input id="n" value="${esc(u.nome || '')}"></div><div><label>PIN (4+ números)</label><input id="pin" inputmode="numeric" value="${esc(u.pin || '')}"></div>
+    <div><label>Função (preenche as permissões)</label><select id="pp">${Object.keys(S.b.papeis).map(p => `<option ${p === u.papel ? 'selected' : ''}>${p}</option>`).join('')}</select></div></div>
+    <label class="mt">O que esta pessoa pode fazer</label><div class="perm" id="perm">${Object.entries(S.b.permissoes).map(([k, n]) => `<label><input type="checkbox" value="${k}" ${ps.has(k) ? 'checked' : ''}> ${esc(n)}</label>`).join('')}</div>
+    <div class="g3 mt"><div><label>Desconto máximo sem autorização (%)</label><input id="dm" value="${u.desconto_max || 0}"></div><div><label>Comissão (%)</label><input id="cm" value="${u.comissao || 0}"></div><div><label>Telefone</label><input id="tl" value="${esc(u.telefone || '')}"></div></div>`,
+    foot: `${u.id ? `<label style="display:flex;gap:6px;align-items:center;margin:0;color:var(--ink)"><input type="checkbox" id="at" style="width:auto" ${u.ativo ? 'checked' : ''}> Ativo</label>` : ''}<span class="sp"></span><button class="btn" id="ok">Salvar</button>` });
+  $('#pp', m).onchange = e => { const l = S.b.papeis[e.target.value]; $$('#perm input', m).forEach(i => i.checked = l.includes(i.value)); };
+  $('#ok', m).onclick = async () => {
+    try { await api('/api/cad/usuarios' + (u.id ? '/' + u.id : ''), { method: u.id ? 'PUT' : 'POST', body: { nome: $('#n', m).value, pin: $('#pin', m).value, papel: $('#pp', m).value, permissoes: $$('#perm input:checked', m).map(i => i.value), desconto_max: num($('#dm', m).value), comissao: num($('#cm', m).value), telefone: $('#tl', m).value, ativo: $('#at', m) ? ($('#at', m).checked ? 1 : 0) : 1 } });
+      m.close(); ok('Salvo. Vale a partir do próximo login da pessoa.'); render(); } catch (e) { err(e); }
+  };
+}
+
+// ---------------------------------------------------------------- configurações
+async function telaConfig(main) {
+  await carregar();
+  let aba = telaConfig.aba || 'precos';
+  const c = S.b.config;
+  main.innerHTML = `<h2 class="mb">Configurações</h2><div class="tabs" id="tb">${[['precos', 'Produtos e tabelas de preço'], ['empresa', 'Empresa e Pix'], ['online', 'Área do cliente'], ['sistema', 'Sistema']].map(([k, n]) => `<button data-a="${k}" class="${k === aba ? 'on' : ''}">${n}</button>`).join('')}</div><div id="cf"></div>`;
+  $('#tb').onclick = e => { const b = e.target.closest('[data-a]'); if (b) { telaConfig.aba = b.dataset.a; render(); } };
+  const el = $('#cf');
+  const salvarCfg = async () => { const d = {}; $$('[data-c]', el).forEach(i => d[i.dataset.c] = i.value); try { await api('/api/config', { method: 'PUT', body: d }); await carregar(); ok('Salvo'); } catch (e) { err(e); } };
+  if (aba === 'precos') {
+    el.innerHTML = `<div class="card mb"><div class="row mb"><h3 class="sp">Preços por tabela</h3><button class="btn sm ghost" id="nt">+ Tabela</button><button class="btn sm ghost" id="np">+ Produto</button></div><div style="overflow:auto"><table><tr><th>Produto</th>${S.b.tabelas.map(t => `<th class="n">${esc(t.nome)}</th>`).join('')}<th></th></tr>
+      ${S.b.produtos.map(p => `<tr data-p="${p.id}"><td><b>${esc(p.nome)}</b>${!p.ativo ? ' <span class="pill p-off">inativo</span>' : ''}</td>${S.b.tabelas.map(t => `<td class="n"><input data-t="${t.id}" value="${p.precos[t.id] ?? ''}" style="width:86px;text-align:right;padding:5px 7px"></td>`).join('')}<td class="n" style="white-space:nowrap"><button class="btn sm ghost" data-ep="${p.id}">Detalhes</button> <button class="btn sm" data-sp="${p.id}">Salvar</button></td></tr>`).join('')}</table></div>
+      <p class="small mut mt">Cada cliente tem uma tabela. O pedido puxa o preço dela sozinho. Cada rota também sugere uma tabela pros clientes novos.</p></div>`;
+    el.onclick = async e => {
+      const sp = e.target.closest('[data-sp]'), ep = e.target.closest('[data-ep]');
+      if (sp) { const tr = sp.closest('tr'), pr = {}; $$('[data-t]', tr).forEach(i => pr[i.dataset.t] = i.value === '' ? '' : num(i.value)); try { await api('/api/cad/produtos/' + sp.dataset.sp, { method: 'PUT', body: { precos: pr } }); ok('Preços salvos'); await carregar(); } catch (er) { err(er); } }
+      if (ep || e.target.id === 'np') editarProduto(ep ? prod(ep.dataset.ep) : { ativo: 1, online: 1, un_caixa: 12, validade_dias: 365, unidade: 'un', ficha: [] });
+      if (e.target.id === 'nt') { const n = prompt('Nome da nova tabela (ex.: Supermercados):'); if (n) { await api('/api/cad/tabelas', { body: { nome: n } }); render(); } }
+    };
+  } else if (aba === 'empresa') {
+    const f = (k, l, ph = '') => `<div><label>${l}</label><input data-c="${k}" value="${esc(c[k] || '')}" placeholder="${esc(ph)}"></div>`;
+    el.innerHTML = `<div class="card"><div class="g2">${f('empresa', 'Nome')}${f('slogan', 'Slogan')}${f('endereco', 'Endereço')}${f('telefones', 'Telefones')}${f('whatsapp', 'WhatsApp principal (só números)')}${f('instagram', 'Instagram')}${f('cnpj', 'CNPJ')}${f('selo', 'Selo / certificação')}
+      ${f('pix_chave', 'Chave Pix', 'CNPJ, e-mail, telefone ou aleatória')}${f('pix_nome', 'Nome do recebedor Pix')}${f('pix_cidade', 'Cidade do recebedor Pix')}${f('custo_caju_kg', 'Custo do caju (R$/kg) para custo do lote')}
+      ${f('lat_fazenda', 'Latitude da fazenda')}${f('lng_fazenda', 'Longitude da fazenda')}</div><button class="btn mt" id="sv">Salvar</button>
+      <p class="small mut mt">Com a chave Pix preenchida, o espelho de pedido e a área do cliente mostram o QR Code com o valor certo.</p></div>`;
+    $('#sv').onclick = salvarCfg;
+  } else if (aba === 'online') {
+    el.innerHTML = `<div class="card"><div class="g2"><div><label>Pedidos pela área do cliente</label><select data-c="online_ativo"><option value="1" ${c.online_ativo === '1' ? 'selected' : ''}>Ativos</option><option value="0" ${c.online_ativo !== '1' ? 'selected' : ''}>Pausados</option></select></div>
+      <div><label>Pedido mínimo (R$)</label><input data-c="online_minimo" value="${esc(c.online_minimo || '0')}"></div><div style="grid-column:1/-1"><label>Aviso no topo da área do cliente</label><input data-c="online_msg" value="${esc(c.online_msg || '')}"></div>
+      <div style="grid-column:1/-1"><label>Mensagem de cobrança (WhatsApp) · {cliente} {numero} {valor} {vencimento} {link}</label><textarea data-c="msg_cobranca" rows="3">${esc(c.msg_cobranca || '')}</textarea></div>
+      <div style="grid-column:1/-1"><label>Mensagem de status do pedido · {cliente} {numero} {status} {link}</label><textarea data-c="msg_pedido" rows="2">${esc(c.msg_pedido || '')}</textarea></div>
+      <div style="grid-column:1/-1"><label>Endereço público do sistema (para os links)</label><input data-c="url_publica" value="${esc(c.url_publica || '')}" placeholder="https://cajuina.seudominio.com.br"></div></div>
+      <button class="btn mt" id="sv">Salvar</button><p class="small mut mt">Link da área do cliente: <b>${esc((c.url_publica || location.origin).replace(/\/$/, ''))}/cliente</b> · o cliente entra com o WhatsApp cadastrado e um código.</p></div>`;
+    $('#sv').onclick = salvarCfg;
+  } else {
+    el.innerHTML = `<div class="g2"><div class="card"><h3 class="mb">Backup</h3><p class="small mut mb">Backup automático a cada 12 horas. Baixe uma cópia de vez em quando e guarde no Drive.</p><a class="btn ghost" href="/api/backup">⬇ Baixar backup agora</a></div>
+      <div class="card"><h3 class="mb">Dados de demonstração</h3>${c.demo === '1' ? `<p class="small mb">O sistema está com <b>clientes, pedidos e lotes fictícios</b> para apresentação. Antes de usar de verdade, apague tudo (produtos, preços, rotas e equipe são mantidos).</p><button class="btn" id="lz">Apagar dados de demonstração</button>` : '<p class="small mut">Sistema em uso real.</p>'}</div></div>`;
+    $('#lz') && ($('#lz').onclick = async () => { const t = prompt('Isso apaga clientes, pedidos, lotes e financeiro de demonstração. Digite APAGAR para confirmar:'); if (t !== 'APAGAR') return; try { await api('/api/demo/limpar', { body: { confirmar: 'APAGAR' } }); ok('Pronto! Sistema limpo para uso real.'); await carregar(); render(); } catch (e) { err(e); } });
+  }
+}
+function editarProduto(p) {
+  const ins = S.b.insumos || [];
+  let ficha = (p.ficha || []).map(f => ({ ...f }));
+  const m = modal({ title: p.id ? esc(p.nome) : 'Novo produto', wide: true, body: `<div class="g3"><div style="grid-column:span 2"><label>Nome</label><input id="nome" value="${esc(p.nome || '')}"></div><div><label>Unidade</label><input id="unidade" value="${esc(p.unidade || 'un')}"></div>
+    <div style="grid-column:1/-1"><label>Descrição</label><input id="descricao" value="${esc(p.descricao || '')}"></div>
+    <div><label>Unidades por caixa</label><input id="un_caixa" value="${p.un_caixa || 1}"></div><div><label>Validade (dias)</label><input id="validade_dias" value="${p.validade_dias || 365}"></div><div><label>Estoque mínimo</label><input id="minimo" value="${p.minimo || 0}"></div>
+    <div><label>Aparece na área do cliente</label><select id="online"><option value="1" ${p.online ? 'selected' : ''}>Sim</option><option value="0" ${!p.online ? 'selected' : ''}>Não</option></select></div><div><label>Ativo</label><select id="ativo"><option value="1" ${p.ativo ? 'selected' : ''}>Sim</option><option value="0" ${!p.ativo ? 'selected' : ''}>Não</option></select></div>
+    <div><label>Foto</label><input type="file" accept="image/*" id="ft"></div></div>
+    <h4 class="mt mb">Ficha técnica (insumos por unidade produzida)</h4><div id="fc"></div><button class="btn sm ghost" id="af">+ Insumo</button>`, foot: '<button class="btn" id="ok">Salvar</button>' });
+  let foto = p.foto || '';
+  const dfc = () => { $('#fc', m).innerHTML = ficha.map((f, i) => `<div class="row mb"><select data-i="${i}" class="fi" style="flex:1">${ins.map(x => `<option value="${x.id}" ${x.id == f.insumo_id ? 'selected' : ''}>${esc(x.nome)} (${esc(x.unidade)})</option>`).join('')}</select><input data-i="${i}" class="fq" value="${f.qtd}" style="width:90px"><button class="btn sm ghost" data-d="${i}">×</button></div>`).join('') || '<p class="small mut">Sem insumos</p>';
+    $$('.fi', m).forEach(x => x.onchange = () => ficha[x.dataset.i].insumo_id = +x.value); $$('.fq', m).forEach(x => x.onchange = () => ficha[x.dataset.i].qtd = num(x.value)); $$('[data-d]', m).forEach(x => x.onclick = () => { ficha.splice(x.dataset.d, 1); dfc(); }); };
+  $('#af', m).onclick = () => { ficha.push({ insumo_id: ins[0]?.id, qtd: 1 }); dfc(); };
+  $('#ft', m).onchange = async e => { foto = await reduzir(e.target.files[0], 400, .8); ok('Foto pronta'); };
+  $('#ok', m).onclick = async () => { const d = { ficha, foto }; ['nome', 'unidade', 'descricao'].forEach(k => d[k] = $('#' + k, m).value); ['un_caixa', 'validade_dias', 'minimo', 'online', 'ativo'].forEach(k => d[k] = parseInt($('#' + k, m).value) || 0);
+    try { await api('/api/cad/produtos' + (p.id ? '/' + p.id : ''), { method: p.id ? 'PUT' : 'POST', body: d }); m.close(); ok('Produto salvo'); await carregar(); render(); } catch (e) { err(e); } };
+  dfc();
+}
+
+start();
