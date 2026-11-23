@@ -338,8 +338,9 @@ def montar_itens(j, tabela_id, permite_preco):
         u = float(it["unit"]) if permite_preco and it.get("unit") not in (None, "") else preco(tabela_id, p["id"])
         if u < 0:
             raise ValueError("Preço inválido")
-        linhas.append((p, q, round(u, 2)))
-        subtotal += q * round(u, 2)
+        u = round(u, 4)
+        linhas.append((p, q, u))
+        subtotal += round(q * u, 2)
     return linhas, round(subtotal, 2)
 
 

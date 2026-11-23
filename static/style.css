@@ -146,7 +146,13 @@ tr.click{cursor:pointer}tr.click:hover td{background:#FFFBF0}
 .ptag.mod{background:#FFE7E3;border:1px solid var(--red);color:var(--red)}
 .ptag:disabled{border-style:solid;border-color:transparent;background:transparent;padding-left:0;cursor:default}
 .prodline .i small{display:block}
-.npbar{display:none}.om{display:none!important}
+.npbar{display:none}
+input.salvo{border-color:var(--leaf)!important;box-shadow:0 0 0 3px #3e8e2f33}
+.qty2{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;justify-content:flex-end}
+.stp small{display:block;font-size:10px;letter-spacing:1px;text-transform:uppercase;font-weight:800;color:var(--mut);margin-bottom:3px;text-align:center}
+.stp>div{display:flex;align-items:center;gap:4px}
+.stp button{width:36px;height:36px;border-radius:8px;background:#F3E6C9;font-weight:900;font-size:18px}
+.stp input{width:58px;height:36px;text-align:center;font-weight:800;font-size:16px;padding:0}.om{display:none!important}
 .ac{position:relative}
 .acl{position:absolute;left:0;right:0;top:100%;z-index:10;background:#fff;border-radius:12px;box-shadow:0 10px 30px #2b1b1430;overflow:hidden;margin-top:4px}
 .acl:empty{display:none}
@@ -198,7 +204,7 @@ tr.click{cursor:pointer}tr.click:hover td{background:#FFFBF0}
   .modal .mf .btn:last-child:nth-child(odd){grid-column:1/-1}
   .modal table th,.modal table td{padding:7px 4px;font-size:12.5px}
   .prodline{flex-wrap:wrap}.prodline .i{min-width:0}.prodline .qty{width:100%;justify-content:flex-end}
-  .qty button{width:40px;height:40px;font-size:18px}.qty input{width:70px;height:40px;font-size:16px}.qty .cx{padding:0 12px;font-size:13px;margin-right:auto}
+  .qty button{width:40px;height:40px;font-size:18px}.qty2{width:100%;justify-content:space-between}.stp button{width:40px;height:40px}.stp input{width:64px;height:40px}.qty input{width:70px;height:40px;font-size:16px}.qty .cx{padding:0 12px;font-size:13px;margin-right:auto}
   .resumo{position:static}
   #toast{bottom:auto;top:calc(70px + env(safe-area-inset-top));width:calc(100% - 32px)}
   .card{overflow-x:auto}.hm{display:none!important}.om{display:flex!important}span.om{display:inline!important}.pago{width:100%}.card table{min-width:100%}
@@ -288,4 +294,7 @@ input,select,textarea{border:1px solid #E2D3B6;border-radius:8px}
   .kcol{border:none}
   .modal,.modal.wide{border-radius:14px 14px 0 0}
   .npbar:not(:empty){border-top:2.5px solid var(--ink)}
+  .tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;border:none;overflow:visible}
+  .tabs button{white-space:normal;background:#fff;border:1px solid #E2D3B6;border-radius:9px;padding:10px 8px;font-size:13.5px;line-height:1.2;color:var(--ink);box-shadow:0 1px 2px #2b1b140d}
+  .tabs button.on{background:var(--ink);color:var(--ylw);border-color:var(--ink)}
 }

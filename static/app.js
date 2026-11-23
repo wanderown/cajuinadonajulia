@@ -33,6 +33,7 @@ const ICO = {
   config: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
   mais: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
 };
+const estqTxt = (p, q) => { const cx = p.un_caixa || 1; return cx > 1 && q >= cx ? `${inteiro(Math.floor(q / cx))} cx${q % cx ? ' + ' + (q % cx) : ''} (${inteiro(q)} un)` : `${inteiro(q)} un`; };
 const ico = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICO[k] || ''}</svg>`;
 const S = { me: null, b: null, poll: null };
 
@@ -142,7 +143,7 @@ function telaPainel(main) {
 
 // ---------------------------------------------------------------- pedidos
 function pillCanal(p) { return `<span class="pill ${CANAL_PILL[p.canal] || ''}">${esc(S.b.canais[p.canal] || p.canal)}</span>`; }
-function itensTxt(p) { return p.itens.map(i => { const cx = prod(i.produto_id)?.un_caixa || 1; return `<li>${cx > 1 && i.qtd % cx === 0 ? (i.qtd / cx) + ' cx × ' + cx : i.qtd + ' ×'} ${esc(i.descricao)}</li>`; }).join(''); }
+function itensTxt(p) { return p.itens.map(i => { const cx = prod(i.produto_id)?.un_caixa || 1; return `<li>${cx > 1 && i.qtd >= cx ? Math.floor(i.qtd / cx) + ' cx' + (i.qtd % cx ? ' + ' + (i.qtd % cx) + ' un' : '') + ' ·' : i.qtd + ' un ·'} ${esc(i.descricao)}</li>`; }).join(''); }
 function pagPill(p) { return p.status === 'cancelado' ? '<span class="pill p-off">cancelado</span>' : p.aberto <= 0.009 ? '<span class="pill p-ok">pago</span>' : p.vencido ? `<span class="pill p-bad">vencido ${dm(p.vencimento)}</span>` : p.condicao === 'prazo' ? `<span class="pill p-warn">a prazo · ${dm(p.vencimento)}</span>` : `<span class="pill p-warn">a receber</span>`; }
 function telaPedidos(main) {
   let filtro = 'todos';
@@ -275,7 +276,7 @@ async function novoPedido(clienteId, ed) {
   const rota = () => S.b.rotas.find(r => r.id == st.rota_id);
   const frete = () => st.frete !== null ? st.frete : rota() ? (rota().frete_gratis_acima && sub() >= rota().frete_gratis_acima ? 0 : rota().frete) : 0;
   const total = () => r2(Math.max(0, sub() + frete() - st.desconto));
-  const qtdTxt = (pid, q) => { const cx = prod(pid).un_caixa || 1; return cx > 1 && q % cx === 0 ? `${q / cx} cx × ${cx}` : `${q} ×`; };
+  const qtdTxt = (pid, q) => { const cx = prod(pid).un_caixa || 1; if (cx === 1 || q < cx) return `${q} un ·`; return `${Math.floor(q / cx)} cx${q % cx ? ' + ' + (q % cx) + ' un' : ''} ·`; };
   const setCli = c => {
     if (!ed && ((c?.id || '') != st.cliente_id || !st.tabela_id)) {
       st.cliente_id = c ? c.id : ''; st.tabela_id = c?.tabela_id || cfg('tabela_padrao') || 1; st.rota_id = c?.rota_id || '';
@@ -293,10 +294,16 @@ async function novoPedido(clienteId, ed) {
   const drawProds = () => {
     $('#prods', m).innerHTML = S.b.produtos.filter(p => p.ativo || st.itens[p.id]).map(p => { const cx = p.un_caixa || 1, u = precoDe(p.id);
       return `<div class="prodline"><img src="${esc(p.foto)}" alt=""><div class="i"><b>${esc(p.nome)}</b>
-      <button class="ptag ${mudou(p.id) ? 'mod' : ''}" data-pr="${p.id}" ${mexePreco ? '' : 'disabled'}>${brl(u)}<small>/un</small>${cx > 1 ? ` · cx ${brl(u * cx)}` : ''}${mexePreco ? ' <i>✎</i>' : ''}</button>
-      <small>estoque ${inteiro(p.saldo + (jaNoPedido[p.id] || 0))}${mudou(p.id) ? ` · tabela ${brl(precoTab(p.id))}` : ''}</small></div>
-      <div class="qty">${cx > 1 ? `<button class="cx" data-cx="${p.id}">+ cx (${cx})</button>` : ''}<button data-m="${p.id}">−</button><input data-q="${p.id}" inputmode="numeric" value="${st.itens[p.id] || ''}" placeholder="0"><button data-p="${p.id}">+</button></div></div>`; }).join('');
+      <button class="ptag ${mudou(p.id) ? 'mod' : ''}" data-pr="${p.id}" ${mexePreco ? '' : 'disabled'}>${cx > 1 ? `${brl(u * cx)}<small>/cx</small> · ${brl(u)}<small>/un</small>` : `${brl(u)}<small>/un</small>`}${mexePreco ? ' <i>✎</i>' : ''}</button>
+      <small>estoque ${estqTxt(p, p.saldo + (jaNoPedido[p.id] || 0))}${mudou(p.id) ? ` · tabela ${brl(precoTab(p.id) * cx)}${cx > 1 ? '/cx' : ''}` : ''}</small></div>
+      ${qtyCtl(p)}</div>`; }).join('');
   };
+  const qtyCtl = p => {
+    const cx = p.un_caixa || 1, q = st.itens[p.id] || 0;
+    const step = (k, lbl, v) => `<div class="stp"><small>${lbl}</small><div><button data-m="${p.id}" data-k="${k}">−</button><input data-q="${p.id}" data-k="${k}" inputmode="numeric" value="${v || ''}" placeholder="0"><button data-p="${p.id}" data-k="${k}">+</button></div></div>`;
+    return `<div class="qty2">${cx > 1 ? step('cx', `Caixas (${cx} un)`, Math.floor(q / cx)) + step('un', 'Avulsas', q % cx) : step('un', 'Unidades', q)}</div>`;
+  };
+  const setQtd = (pid, cxs, avs) => { const cx = prod(pid).un_caixa || 1; st.itens[pid] = Math.max(0, (cx > 1 ? cxs * cx : 0) + avs); };
   const editarPreco = pid => {
     const p = prod(pid), cx = p.un_caixa || 1, f2 = v => r2(v).toFixed(2).replace('.', ',');
     const mp = modal({ title: `Preço · ${esc(p.nome)}`, body: `<p class="small mut mb">Vale só para este pedido. Tabela <b>${esc((S.b.tabelas.find(t => t.id == st.tabela_id) || {}).nome || '')}</b>: ${brl(precoTab(pid))}/un${cx > 1 ? ` · ${brl(precoTab(pid) * cx)}/cx` : ''}.</p>
@@ -379,11 +386,20 @@ async function novoPedido(clienteId, ed) {
   $('#prods', m).onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.pr) return editarPreco(b.dataset.pr);
-    const id = b.dataset.p || b.dataset.m || b.dataset.cx; if (!id) return;
-    const q = st.itens[id] || 0; st.itens[id] = Math.max(0, b.dataset.p ? q + 1 : b.dataset.m ? q - 1 : q + prod(id).un_caixa);
-    $(`[data-q="${id}"]`, m).value = st.itens[id] || ''; drawRes();
+    const id = b.dataset.p || b.dataset.m; if (!id) return;
+    const cx = prod(id).un_caixa || 1, q = st.itens[id] || 0, d = b.dataset.p ? 1 : -1;
+    let c = cx > 1 ? Math.floor(q / cx) : 0, u = cx > 1 ? q % cx : q;
+    if (b.dataset.k === 'cx') c = Math.max(0, c + d); else { u = u + d; if (cx > 1 && u >= cx) { c++; u = 0; } if (u < 0) { if (cx > 1 && c > 0) { c--; u = cx - 1; } else u = 0; } }
+    setQtd(id, c, u); refreshQty(id); drawRes();
   };
-  $('#prods', m).oninput = e => { const i = e.target.closest('[data-q]'); if (i) { st.itens[i.dataset.q] = parseInt(i.value) || 0; drawRes(); } };
+  const refreshQty = id => { const box = $(`[data-q="${id}"]`, m)?.closest('.qty2'); if (box && box.isConnected) try { box.outerHTML = qtyCtl(prod(id)); } catch (e) { } };
+  $('#prods', m).oninput = e => {
+    const i = e.target.closest('[data-q]'); if (!i) return;
+    const id = i.dataset.q, cx = prod(id).un_caixa || 1, v = parseInt(i.value) || 0, q = st.itens[id] || 0;
+    if (cx === 1) setQtd(id, 0, v); else if (i.dataset.k === 'cx') setQtd(id, v, q % cx); else setQtd(id, Math.floor(q / cx), v);
+    drawRes();
+  };
+  $('#prods', m).addEventListener('change', e => { const i = e.target.closest('[data-q]'); if (i) refreshQty(i.dataset.q); });
   setCli(clientes.find(c => c.id == st.cliente_id));
   if (st.cliente_id) $('#cb', m).value = cli()?.nome || '';
 }
@@ -720,13 +736,27 @@ async function telaConfig(main) {
   const salvarCfg = async () => { const d = {}; $$('[data-c]', el).forEach(i => d[i.dataset.c] = i.value); try { await api('/api/config', { method: 'PUT', body: d }); await carregar(); ok('Salvo'); } catch (e) { err(e); } };
   if (aba === 'precos') {
     el.innerHTML = `<div class="card mb"><div class="row mb"><h3 class="sp">Preços por tabela</h3><button class="btn sm ghost" id="nt">+ Tabela</button><button class="btn sm ghost" id="np">+ Produto</button></div><div style="overflow:auto"><table><tr><th>Produto</th>${S.b.tabelas.map(t => `<th class="n">${esc(t.nome)}</th>`).join('')}<th></th></tr>
-      ${S.b.produtos.map(p => `<tr data-p="${p.id}"><td><b>${esc(p.nome)}</b>${!p.ativo ? ' <span class="pill p-off">inativo</span>' : ''}</td>${S.b.tabelas.map(t => `<td class="n"><input data-t="${t.id}" value="${p.precos[t.id] ?? ''}" style="width:86px;text-align:right;padding:5px 7px"></td>`).join('')}<td class="n" style="white-space:nowrap"><button class="btn sm ghost" data-ep="${p.id}">Detalhes</button> <button class="btn sm" data-sp="${p.id}">Salvar</button></td></tr>`).join('')}</table></div>
+      ${S.b.produtos.map(p => { const cx = p.un_caixa || 1; return `<tr data-p="${p.id}"><td><b>${esc(p.nome)}</b><div class="small mut">${cx > 1 ? `preço da <b>caixa com ${cx}</b>` : 'preço da unidade'}</div>${!p.ativo ? ' <span class="pill p-off">inativo</span>' : ''}</td>${S.b.tabelas.map(t => { const u = p.precos[t.id]; return `<td class="n"><input data-t="${t.id}" data-cx="${cx}" inputmode="decimal" value="${u === undefined || u === null ? '' : (Math.round(u * cx * 100) / 100).toFixed(2).replace('.', ',')}" style="width:96px;text-align:right;padding:5px 7px"><div class="small mut" data-u>${u === undefined || u === null ? '—' : cx > 1 ? brl(u) + '/un' : ''}</div></td>`; }).join('')}<td class="n"><button class="btn sm ghost" data-ep="${p.id}">Detalhes</button></td></tr>`; }).join('')}</table></div>
+      <p class="small mut mt">Digite o valor e ele <b>salva sozinho</b> ao sair do campo. Produtos vendidos em caixa: coloque o preço da caixa, o da unidade é calculado.</p>
       <p class="small mut mt">Cada cliente tem uma tabela. O pedido puxa o preço dela sozinho. Cada rota também sugere uma tabela pros clientes novos.</p></div>`;
     el.onclick = async e => {
       const sp = e.target.closest('[data-sp]'), ep = e.target.closest('[data-ep]');
-      if (sp) { const tr = sp.closest('tr'), pr = {}; $$('[data-t]', tr).forEach(i => pr[i.dataset.t] = i.value === '' ? '' : num(i.value)); try { await api('/api/cad/produtos/' + sp.dataset.sp, { method: 'PUT', body: { precos: pr } }); ok('Preços salvos'); await carregar(); } catch (er) { err(er); } }
+
+      void sp;
       if (ep || e.target.id === 'np') editarProduto(ep ? prod(ep.dataset.ep) : { ativo: 1, online: 1, un_caixa: 12, validade_dias: 365, unidade: 'un', ficha: [] });
-      if (e.target.id === 'nt') { const n = prompt('Nome da nova tabela (ex.: Supermercados):'); if (n) { await api('/api/cad/tabelas', { body: { nome: n } }); render(); } }
+      if (e.target.id === 'nt') { const n = prompt('Nome da nova tabela (ex.: Supermercados):'); if (n) { await api('/api/cad/tabelas', { body: { nome: n } }); await carregar(); render(); } }
+    };
+    el.onchange = async e => {
+      const i = e.target.closest('[data-t]'); if (!i) return;
+      const pid = i.closest('tr').dataset.p, cx = +i.dataset.cx || 1, v = i.value.trim();
+      const unit = v === '' ? '' : Math.round(num(v) / cx * 10000) / 10000;
+      try {
+        await api('/api/cad/produtos/' + pid, { method: 'PUT', body: { precos: { [i.dataset.t]: unit } } });
+        prod(pid).precos[i.dataset.t] = unit === '' ? undefined : unit;
+        i.nextElementSibling.textContent = unit === '' ? '—' : cx > 1 ? brl(unit) + '/un' : '';
+        i.classList.add('salvo'); setTimeout(() => i.classList.remove('salvo'), 1200); ok('Preço salvo');
+        carregar();
+      } catch (er) { err(er); }
     };
   } else if (aba === 'empresa') {
     const f = (k, l, ph = '') => `<div><label>${l}</label><input data-c="${k}" value="${esc(c[k] || '')}" placeholder="${esc(ph)}"></div>`;
