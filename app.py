@@ -424,7 +424,8 @@ def pedido_completo(pid):
         WHERE p.id=?""", (pid,)))
     if not p:
         return None
-    p["itens"] = rows(d.execute("SELECT * FROM pedido_itens WHERE pedido_id=? ORDER BY id", (pid,)))
+    p["itens"] = rows(d.execute("""SELECT i.*, pr.un_caixa, pr.descricao detalhe, pr.unidade FROM pedido_itens i
+        LEFT JOIN produtos pr ON pr.id=i.produto_id WHERE i.pedido_id=? ORDER BY i.id""", (pid,)))
     for i in p["itens"]:
         i["lotes"] = rows(d.execute("""SELECT l.codigo, l.validade, pl.qtd FROM pedido_lotes pl JOIN lote_itens li ON li.id=pl.lote_item_id
             JOIN lotes l ON l.id=li.lote_id WHERE pl.item_id=?""", (i["id"],)))

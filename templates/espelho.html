@@ -46,9 +46,10 @@ td{padding:8px;border-bottom:1px solid #f1e8dc;font-size:12.5px;vertical-align:t
       Pagamento: <b>{{ {'pix':'Pix','dinheiro':'Dinheiro','boleto':'Boleto','credito':'Cartão de crédito','debito':'Cartão de débito','transferencia':'Transferência'}.get(p.forma, p.forma) }}{% if p.condicao=='prazo' %} · a prazo{% else %} · à vista{% endif %}</b><br>
       Vencimento: <b>{{ p.vencimento | dbr }}</b><br>Entrega: <b>{{ ('Rota ' ~ p.rota) if p.rota else 'Retirada' }}</b>{% if p.data_entrega %} · {{ p.data_entrega | dbr }}{% endif %}<br>Atendente: {{ p.usuario }}</div>
   </div>
-  <table class="it"><tr><th>Produto</th><th>Lote / validade</th><th class="n">Qtd</th><th class="n">Unit. (R$)</th><th class="n">Total (R$)</th></tr>
-  {% for i in p.itens %}<tr><td><b>{{ i.descricao }}</b><div class="lt lm">{% for l in i.lotes %}Lote {{ l.codigo }} · val. {{ (l.validade | dbr)[3:] }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div></td><td class="lt">{% for l in i.lotes %}{{ l.codigo }} · {{ (l.validade | dbr)[3:] }}{% if i.lotes|length > 1 %} ({{ l.qtd }}){% endif %}<br>{% endfor %}</td>
-    <td class="n">{{ i.qtd }}</td><td class="n">{{ i.unit | brl }}</td><td class="n">{{ i.total | brl }}</td></tr>{% endfor %}
+  <table class="it"><tr><th>Produto</th><th>Lote / validade</th><th class="n">Quantidade</th><th class="n">Preço (R$)</th><th class="n">Total (R$)</th></tr>
+  {% for i in p.itens %}{% set cx = i.un_caixa or 1 %}{% set emcx = cx > 1 and i.qtd >= cx and i.qtd % cx == 0 %}<tr><td><b>{{ i.descricao }}</b>{% if cx > 1 %}<div class="lt">Caixa com {{ cx }} unidades{% if i.detalhe %} · {{ i.detalhe }}{% endif %}</div>{% elif i.detalhe %}<div class="lt">{{ i.detalhe }}</div>{% endif %}<div class="lt lm">{% for l in i.lotes %}Lote {{ l.codigo }} · val. {{ (l.validade | dbr)[3:] }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div></td><td class="lt">{% for l in i.lotes %}{{ l.codigo }} · {{ (l.validade | dbr)[3:] }}{% if i.lotes|length > 1 %} ({{ l.qtd }}){% endif %}<br>{% endfor %}</td>
+    <td class="n">{% if emcx %}<b>{{ (i.qtd // cx) }} cx</b><div class="lt">{{ i.qtd }} un</div>{% elif cx > 1 and i.qtd > cx %}<b>{{ i.qtd // cx }} cx + {{ i.qtd % cx }} un</b><div class="lt">{{ i.qtd }} un</div>{% else %}<b>{{ i.qtd }} un</b>{% endif %}</td>
+    <td class="n">{% if cx > 1 %}{{ (i.unit * cx) | brl }}<span class="lt"> /cx</span><div class="lt">{{ i.unit | brl }} /un</div>{% else %}{{ i.unit | brl }}<span class="lt"> /un</span>{% endif %}</td><td class="n"><b>{{ i.total | brl }}</b></td></tr>{% endfor %}
   </table>
   {% if p.obs and p.cliente %}<p style="margin-top:10px;font-size:12px"><b>Observação:</b> {{ p.obs }}</p>{% endif %}
   <div class="tot">

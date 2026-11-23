@@ -23,6 +23,6 @@ table{width:100%;border-collapse:collapse}td{padding:3px 4px;border-bottom:1px d
 {% for p in ps %}<div class="p"><div class="t"><span><span class="ck"></span> {{ loop.index }}. #{{ p.numero }} · {{ p.cliente or 'Sem cliente' }}</span>
   <span>{% if p.aberto > 0.009 and p.condicao == 'vista' %}<span class="c">COBRAR R$ {{ p.aberto | brl }}</span>{% elif p.aberto > 0.009 %}a prazo · vence {{ p.vencimento | dbr }}{% else %}pago{% endif %}</span></div>
   <div class="a">{{ p.endereco }} · {{ p.bairro }} · {{ p.cidade }} · {{ p.telefone | tel }}{% if p.rota %} · rota {{ p.rota }}{% endif %}</div>
-  <table>{% for i in p.itens %}<tr><td>{{ i.descricao }}</td><td>{% for l in i.lotes %}{{ l.codigo }} {% endfor %}</td><td class="n"><b>{{ i.qtd }}</b> un</td></tr>{% endfor %}</table>
+  <table>{% for i in p.itens %}<tr><td>{{ i.descricao }}</td><td>{% for l in i.lotes %}{{ l.codigo }} {% endfor %}</td><td class="n">{% set cx = i.un_caixa or 1 %}{% if cx > 1 and i.qtd >= cx %}<b>{{ i.qtd // cx }} cx</b>{% if i.qtd % cx %} + <b>{{ i.qtd % cx }}</b> un{% endif %} <small>({{ i.qtd }} un)</small>{% else %}<b>{{ i.qtd }}</b> un{% endif %}</td></tr>{% endfor %}</table>
   {% if p.obs %}<div style="margin-top:4px"><b>Obs:</b> {{ p.obs }}</div>{% endif %}</div>{% endfor %}
 </body></html>

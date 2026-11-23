@@ -42,6 +42,20 @@ textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px
 .toast.e{background:var(--red)}
 .demo{background:#FFF1C2;border:1px dashed #d9a400;border-radius:12px;padding:10px;margin-top:12px;font-size:13.5px}
 .aviso{background:var(--ink);color:var(--ylw);border-radius:12px;padding:10px 12px;font-size:13px;font-weight:600;margin-bottom:12px}
+
+/* tema espelho */
+body{background:#EFE6D6}
+.hd{background:#fff;border-top:8px solid var(--ylw);border-bottom:2.5px solid var(--ink);box-shadow:0 4px 18px #2b1b1412}
+.hd .s{letter-spacing:2px;font-size:12px;text-transform:uppercase}
+.hd.mini{border-top-width:6px}
+.card,.k{border:none;border-radius:10px;box-shadow:0 1px 2px #2b1b140f,0 8px 26px #2b1b1412}
+.k{border-top:6px solid var(--ylw)}.k.r{border-top-color:var(--red)}
+.k small,label{font-size:10.5px;letter-spacing:1.3px;text-transform:uppercase;font-weight:800}
+.card>h3:first-child{font-size:11.5px;letter-spacing:1.8px;text-transform:uppercase;color:var(--mut);font-weight:900}
+.btn{border-radius:10px}
+.nav{border-top:2.5px solid var(--ink)}.nav button.on{color:var(--ink)}.nav button.on i{background:var(--ylw);border-radius:10px;padding:0 10px}
+.bar{background:linear-gradient(transparent,#EFE6D6 30%)}
+.aviso{border-left:5px solid var(--ylw)}
 </style></head>
 <body><div id="app"></div>
 <script>
@@ -59,7 +73,7 @@ function toast(m, e) { const d = document.createElement('div'); d.className = 't
 async function start() { try { D = await api('/api/c/me'); } catch (e) { D = null; } D ? tela() : login(); }
 function login() {
   let tel = '';
-  $('#app').innerHTML = `<div class="hd"><img src="/static/logo-contorno.png" alt="Cajuína Dona Júlia"><div class="s">Sabor que é Piauí!</div><div class="t">Área do cliente e revendedor</div></div>
+  $('#app').innerHTML = `<div class="hd"><img src="/static/logo.png" alt="Cajuína Dona Júlia"><div class="s">Sabor que é Piauí!</div><div class="t">Área do cliente e revendedor</div></div>
     <div class="w"><div class="card"><h2 style="font-size:20px">Entrar</h2><p class="mut small" style="margin-top:4px">Sem senha: informe seu WhatsApp e digite o código que enviaremos.</p>
     <label>Seu WhatsApp (com DDD)</label><input id="tel" type="tel" inputmode="tel" placeholder="(86) 9 0000-0000" autocomplete="tel">
     <button class="btn" id="env" style="margin-top:14px">Receber código</button><div id="passo2"></div></div>
@@ -79,14 +93,15 @@ function login() {
 }
 function tela() {
   const c = D.cliente;
-  $('#app').innerHTML = `<div class="hd mini"><img src="/static/logo-contorno.png" alt=""><div><b>Olá, ${esc(c.nome.split(' ')[0] === c.nome ? c.nome : c.nome)}</b><span>${c.tipo === 'revenda' ? 'Revendedor' : 'Cliente'}${D.rota ? ' · rota ' + esc(D.rota.nome) + (D.rota.dia ? ' (' + esc(D.rota.dia) + ')' : '') : ''}</span></div><button id="sair">Sair</button></div>
+  $('#app').innerHTML = `<div class="hd mini"><img src="/static/logo.png" alt=""><div><b>Olá, ${esc(c.nome.split(' ')[0] === c.nome ? c.nome : c.nome)}</b><span>${c.tipo === 'revenda' ? 'Revendedor' : 'Cliente'}${D.rota ? ' · rota ' + esc(D.rota.nome) + (D.rota.dia ? ' (' + esc(D.rota.dia) + ')' : '') : ''}</span></div><button id="sair">Sair</button></div>
     <div class="w" id="c"></div><div class="nav">${[['inicio', '🏠', 'Início'], ['pedidos', '📦', 'Pedidos'], ['comprar', '🛒', 'Comprar'], ['pagar', '💠', 'Pagar']].map(([k, i, n]) => `<button data-a="${k}" class="${k === aba ? 'on' : ''}"><i>${i}</i>${n}</button>`).join('')}</div>`;
   $('#sair').onclick = async () => { await api('/api/c/sair', {}); D = null; login(); };
   $('.nav').onclick = e => { const b = e.target.closest('[data-a]'); if (b) { aba = b.dataset.a; tela(); window.scrollTo(0, 0); } };
   ({ inicio, pedidos, comprar, pagar })[aba]($('#c'));
 }
 const pagPill = p => p.status === 'cancelado' ? '' : p.aberto <= 0.009 ? '<span class="pill p-ok">pago</span>' : p.vencido ? `<span class="pill p-bad">vencido ${dbr(p.vencimento).slice(0, 5)}</span>` : `<span class="pill p-warn">vence ${dbr(p.vencimento).slice(0, 5)}</span>`;
-function linhaPed(p) { return `<div class="ped" data-p="${p.id}"><div><b>Pedido #${p.numero} · ${dbr(p.criado_em).slice(0, 5)}</b><small>${p.itens.map(i => i.qtd + '× ' + esc(i.descricao)).join(', ')}</small></div><div style="text-align:right"><span class="pill ${ST[p.status][1]}">${ST[p.status][0]}</span><br>${pagPill(p)}</div></div>`; }
+function qx(i) { const cx = i.un_caixa || 1; return cx > 1 && i.qtd >= cx ? `${Math.floor(i.qtd / cx)} cx${i.qtd % cx ? ' + ' + (i.qtd % cx) + ' un' : ''} ·` : i.qtd + '×'; }
+function linhaPed(p) { return `<div class="ped" data-p="${p.id}"><div><b>Pedido #${p.numero} · ${dbr(p.criado_em).slice(0, 5)}</b><small>${p.itens.map(i => qx(i) + ' ' + esc(i.descricao)).join(', ')}</small></div><div style="text-align:right"><span class="pill ${ST[p.status][1]}">${ST[p.status][0]}</span><br>${pagPill(p)}</div></div>`; }
 function inicio(el) {
   const ult = D.pedidos.find(p => p.status !== 'cancelado');
   const ativo = D.pedidos.find(p => ['novo', 'separando', 'em_rota'].includes(p.status));
@@ -94,7 +109,7 @@ function inicio(el) {
     <div class="k2"><div class="k ${D.aberto > 0 ? 'r' : ''}"><small>Em aberto</small><b class="${D.aberto > 0 ? 'red' : ''}">${brl(D.aberto)}</b><span>${D.aberto > 0 ? 'toque em Pagar' : 'tudo em dia ✓'}</span></div><div class="k"><small>Compras em ${new Date().getFullYear()}</small><b>${brl(D.ano.total)}</b><span>${D.ano.n} pedidos</span></div></div>
     ${D.aberto > 0 ? `<button class="btn y" id="pg" style="margin-bottom:12px">💠 Pagar com Pix · ${brl(D.aberto)}</button>` : ''}
     ${ativo ? `<div class="card"><b>Acompanhe seu pedido #${ativo.numero}</b>${timeline(ativo)}<button class="btn gh sm" data-p="${ativo.id}" style="margin-top:6px">Ver detalhes</button></div>` : ''}
-    ${ult ? `<div class="card"><b>Último pedido · #${ult.numero}</b><p class="small mut" style="margin:4px 0 10px">${ult.itens.map(i => i.qtd + '× ' + esc(i.descricao)).join(', ')} · ${brl(ult.total)}</p>
+    ${ult ? `<div class="card"><b>Último pedido · #${ult.numero}</b><p class="small mut" style="margin:4px 0 10px">${ult.itens.map(i => qx(i) + ' ' + esc(i.descricao)).join(', ')} · ${brl(ult.total)}</p>
       <div style="display:flex;gap:8px"><a class="btn gh sm" href="/espelho/${ult.id}" target="_blank" style="flex:1">⬇ Espelho</a><button class="btn g sm" id="rep" style="flex:1">↻ Repetir pedido</button></div></div>` : ''}
     <div class="card"><b>Meus pedidos</b>${D.pedidos.slice(0, 5).map(linhaPed).join('') || '<p class="mut small">Nenhum pedido ainda</p>'}</div>
     <a class="btn gh" href="https://wa.me/55${esc(D.loja.whatsapp)}" target="_blank" style="color:#137a42">💬 Falar com a Cajuína Dona Júlia</a>
@@ -116,7 +131,7 @@ function detalhe(id) {
   const p = D.pedidos.find(x => x.id === id);
   $('#c').innerHTML = `<button class="btn gh sm" id="volta" style="margin-bottom:12px">← Voltar</button><div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:18px">Pedido #${p.numero}</b><span class="pill ${ST[p.status][1]}">${ST[p.status][0]}</span></div>
     <p class="small mut">${dbr(p.criado_em)} · ${pagPill(p)}</p>${p.status !== 'cancelado' ? timeline(p) : ''}</div>
-    <div class="card">${p.itens.map(i => `<div class="ped"><div><b>${i.qtd}× ${esc(i.descricao)}</b><small>lote ${i.lotes.map(l => esc(l.codigo)).join(', ')}</small></div><b>${brl(i.total)}</b></div>`).join('')}
+    <div class="card">${p.itens.map(i => `<div class="ped"><div><b>${qx(i)} ${esc(i.descricao)}</b><small>lote ${i.lotes.map(l => esc(l.codigo)).join(', ')}</small></div><b>${brl(i.total)}</b></div>`).join('')}
       <div class="ped"><span>Frete</span><b>${p.frete ? brl(p.frete) : 'grátis'}</b></div>${p.desconto ? `<div class="ped"><span>Desconto</span><b class="grn">− ${brl(p.desconto)}</b></div>` : ''}<div class="ped" style="border:none"><b>Total</b><b style="font-size:19px">${brl(p.total)}</b></div></div>
     <div style="display:flex;gap:8px"><a class="btn gh" href="/espelho/${p.id}" target="_blank">⬇ Espelho em PDF</a>${p.aberto > 0.009 ? `<a class="btn y" href="${esc(p.link)}" target="_blank">💠 Pagar ${brl(p.aberto)}</a>` : ''}</div>`;
   $('#volta').onclick = tela; window.scrollTo(0, 0);
