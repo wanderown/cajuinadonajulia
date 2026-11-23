@@ -480,6 +480,17 @@ def pedido_get(pid):
 @exige("pedidos", "feira")
 def pedido_novo():
     j = request.json or {}
+    nome_novo = (j.get("cliente_nome") or "").strip()
+    if not j.get("cliente_id") and nome_novo:
+        ex = db().execute("SELECT id FROM clientes WHERE lower(trim(nome))=lower(?)", (nome_novo,)).fetchone()
+        if ex:
+            j["cliente_id"] = ex[0]
+        else:
+            cur = db().execute("""INSERT INTO clientes (nome,tipo,telefone,cidade,tabela_id,rota_id,ativo,criado_em)
+                VALUES (?,?,?,?,?,?,1,?)""", (nome_novo, "consumidor", so_dig(j.get("cliente_tel") or ""), j.get("cliente_cidade") or "",
+                int(j.get("tabela_id") or cfg_all().get("tabela_padrao") or 1), j.get("rota_id") or None, agora()))
+            j["cliente_id"] = cur.lastrowid
+            registrar("cliente cadastrado no pedido", nome_novo)
     cli = one(db().execute("SELECT tabela_id FROM clientes WHERE id=?", (int(j.get("cliente_id") or 0),))) if j.get("cliente_id") else None
     tabela_id = int(j.get("tabela_id") or (cli and cli["tabela_id"]) or cfg_all().get("tabela_padrao") or 1)
     try:

@@ -147,6 +147,14 @@ tr.click{cursor:pointer}tr.click:hover td{background:#FFFBF0}
 .ptag:disabled{border-style:solid;border-color:transparent;background:transparent;padding-left:0;cursor:default}
 .prodline .i small{display:block}
 .npbar{display:none}.om{display:none!important}
+.ac{position:relative}
+.acl{position:absolute;left:0;right:0;top:100%;z-index:10;background:#fff;border-radius:12px;box-shadow:0 10px 30px #2b1b1430;overflow:hidden;margin-top:4px}
+.acl:empty{display:none}
+.acl button{display:block;width:100%;text-align:left;padding:10px 12px;border-bottom:1px solid #f3e8d2}
+.acl button b{display:block}.acl button small{color:var(--mut)}
+.acl button:hover,.acl button:active{background:#FFF4D6}
+.acl .nv{color:var(--leaf);font-weight:700}.acl .nv b{display:inline}
+.novocli{background:#F1F8EE;border:1px solid #CFE6C6;border-radius:12px;padding:10px 12px}
 .maisg{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .maisg a{display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px 6px;border-radius:14px;background:var(--cream);color:var(--ink);text-decoration:none;font-weight:700;font-size:12.5px;text-align:center}
 .maisg a.on{background:var(--ink);color:var(--ylw)}.maisg svg{width:26px;height:26px}

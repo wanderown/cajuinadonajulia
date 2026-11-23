@@ -258,7 +258,7 @@ async function novoPedido(clienteId, ed) {
   const mexePreco = pode('precos') || S.me.desconto_max > 0;
   const m = modal({
     title: ed ? `Editar pedido #${ed.numero}` : 'Novo pedido', wide: true, body: `<div class="np"><div>
-      <div class="g2"><div><label>Cliente</label><input id="cb" list="cl" placeholder="Digite o nome… (vazio = venda balcão)" ${ed ? 'disabled' : ''}><datalist id="cl">${clientes.map(c => `<option value="${esc(c.nome)}">`).join('')}</datalist></div>
+      <div class="g2"><div class="ac"><label>Cliente</label><input id="cb" autocomplete="off" placeholder="Nome do cliente (vazio = venda balcão)" ${ed ? 'disabled' : ''}><div class="acl" id="acl"></div></div>
       <div><label>Tabela de preço</label><select id="tb" ${ed ? 'disabled' : ''}>${S.b.tabelas.map(t => `<option value="${t.id}">${esc(t.nome)}</option>`).join('')}</select></div></div>
       <div class="small mt" id="cinfo"></div>
       ${mexePreco ? '<p class="small mut mt">Toque no preço de um produto para mudar o valor da caixa ou da unidade só neste pedido.</p>' : ''}
@@ -267,6 +267,7 @@ async function novoPedido(clienteId, ed) {
       <div><div class="resumo" id="res"></div></div></div><div class="npbar" id="npb"></div>`
   });
   const cli = () => clientes.find(c => c.id == st.cliente_id);
+  const norm = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
   const precoTab = pid => prod(pid).precos[st.tabela_id] ?? prod(pid).precos[cfg('tabela_padrao') || 1] ?? 0;
   const precoDe = pid => st.precos[pid] ?? precoTab(pid);
   const mudou = pid => st.precos[pid] !== undefined && Math.abs(st.precos[pid] - precoTab(pid)) > 0.004;
@@ -276,13 +277,17 @@ async function novoPedido(clienteId, ed) {
   const total = () => r2(Math.max(0, sub() + frete() - st.desconto));
   const qtdTxt = (pid, q) => { const cx = prod(pid).un_caixa || 1; return cx > 1 && q % cx === 0 ? `${q / cx} cx × ${cx}` : `${q} ×`; };
   const setCli = c => {
-    if (!ed) {
+    if (!ed && ((c?.id || '') != st.cliente_id || !st.tabela_id)) {
       st.cliente_id = c ? c.id : ''; st.tabela_id = c?.tabela_id || cfg('tabela_padrao') || 1; st.rota_id = c?.rota_id || '';
       st.condicao = c?.prazo_dias ? 'prazo' : 'vista'; st.prazo = c?.prazo_dias || 0; st.frete = null; st.precos = {};
     }
     $('#tb', m).value = st.tabela_id;
     $('#cinfo', m).innerHTML = c ? `${c.tipo === 'revenda' ? '<span class="pill p-rev">REVENDEDOR</span>' : '<span class="pill p-enc">consumidor</span>'} ${esc(c.cidade)} · rota <b>${esc(c.rota || '—')}</b> · prazo <b>${c.prazo_dias || 0} dias</b>
-      ${c.aberto > 0 ? ` · em aberto <b class="${c.vencido > 0 ? 'red' : ''}">${brl(c.aberto)}</b>${c.limite ? ` de ${brl(c.limite)}` : ''}` : ''}` : '<span class="mut">Venda sem cliente cadastrado (balcão / fazenda)</span>';
+      ${c.aberto > 0 ? ` · em aberto <b class="${c.vencido > 0 ? 'red' : ''}">${brl(c.aberto)}</b>${c.limite ? ` de ${brl(c.limite)}` : ''}` : ''}`
+      : st.nome_novo ? `<div class="novocli"><span class="pill p-ok">CLIENTE NOVO</span> <b>${esc(st.nome_novo)}</b> será cadastrado junto com o pedido.<div class="g2 mt"><input id="ntel" inputmode="tel" placeholder="WhatsApp (opcional)" value="${esc(st.tel_novo || '')}"><input id="ncid" placeholder="Cidade (opcional)" value="${esc(st.cid_novo || '')}"></div></div>`
+      : '<span class="mut">Venda sem cliente (balcão / fazenda)</span>';
+    $('#ntel', m) && ($('#ntel', m).oninput = e => st.tel_novo = e.target.value);
+    $('#ncid', m) && ($('#ncid', m).oninput = e => st.cid_novo = e.target.value);
     drawProds(); drawRes();
   };
   const drawProds = () => {
@@ -333,7 +338,12 @@ async function novoPedido(clienteId, ed) {
   };
   const itensBody = () => Object.entries(st.itens).filter(([, q]) => q > 0).map(([produto_id, qtd]) => ({ produto_id, qtd, ...(mudou(produto_id) || ed ? { unit: r2(precoDe(produto_id) * 10000) / 10000 } : {}) }));
   const salvar = async () => {
-    const b = $('#ok', m); b.disabled = true;
+    const b = $('#ok', m);
+    if (!ed && !st.cliente_id && st.nome_novo) {
+      const par = clientes.filter(c => norm(c.nome).includes(norm(st.nome_novo)) || norm(st.nome_novo).includes(norm(c.nome)));
+      if (par.length && !confirm(`Cadastrar "${st.nome_novo}" como cliente NOVO?\n\nJá existe parecido: ${par.slice(0, 3).map(c => c.nome).join(', ')}.\nSe for um deles, toque em Cancelar e escolha na lista.`)) return;
+    }
+    b.disabled = true;
     try {
       if (ed) {
         const p = await api(`/api/pedidos/${ed.id}/itens`, { method: 'PUT', body: { itens: itensBody(), frete: frete(), desconto: st.desconto, obs: $('#obs', m).value, data_entrega: $('#de', m).value } });
@@ -341,11 +351,30 @@ async function novoPedido(clienteId, ed) {
       }
       const p = await api('/api/pedidos', { body: { cliente_id: st.cliente_id || null, tabela_id: st.tabela_id, rota_id: st.rota_id || null, frete: frete(), desconto: st.desconto,
         condicao: st.condicao, prazo_dias: st.prazo, forma: st.forma, pago_agora: $('#pg', m)?.checked, obs: $('#obs', m).value, data_entrega: $('#de', m).value,
-        canal: cli() ? (cli().tipo === 'revenda' ? 'revenda' : 'encomenda') : 'balcao', itens: itensBody() } });
+        cliente_nome: !st.cliente_id ? st.nome_novo || '' : '', cliente_tel: st.tel_novo || '', cliente_cidade: st.cid_novo || '',
+        canal: cli() ? (cli().tipo === 'revenda' ? 'revenda' : 'encomenda') : st.nome_novo ? 'encomenda' : 'balcao', itens: itensBody() } });
       m.close(); ok(`Pedido #${p.numero} criado`); await carregar(); render(); setTimeout(() => detalhePedido(p.id), 250);
     } catch (e) { err(e); b.disabled = false; }
   };
-  $('#cb', m).onchange = e => setCli(clientes.find(c => c.nome === e.target.value));
+  const acl = $('#acl', m);
+  const escolher = c => { st.nome_novo = ''; $('#cb', m).value = c.nome; acl.innerHTML = ''; setCli(c); };
+  $('#cb', m).oninput = e => {
+    const t = norm(e.target.value);
+    const achados = t ? clientes.filter(c => norm(c.nome).includes(t) || String(c.telefone || '').includes(t.replace(/\D/g, '') || '#')).slice(0, 7) : [];
+    acl.innerHTML = achados.map(c => `<button type="button" data-ci="${c.id}"><b>${esc(c.nome)}</b><small>${c.tipo === 'revenda' ? 'revenda · ' : ''}${esc(c.cidade || '')} ${tel(c.telefone)}</small></button>`).join('')
+      + (t && !clientes.some(c => norm(c.nome) === t) ? `<button type="button" data-novo="1" class="nv">+ Cadastrar <b>${esc(e.target.value.trim())}</b> como cliente novo</button>` : '');
+    const exato = clientes.find(c => norm(c.nome) === t);
+    if (exato) { if (exato.id != st.cliente_id) { st.nome_novo = ''; setCli(exato); } }
+    else { const v = t ? e.target.value.trim() : '', tinha = !!st.nome_novo || !!st.cliente_id; st.nome_novo = v;
+      if (st.cliente_id || tinha !== !!v) setCli(null); else if (v && $('.novocli b', m)) $('.novocli b', m).textContent = v; }
+  };
+  acl.onmousedown = e => e.preventDefault();
+  acl.onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.ci) return escolher(clientes.find(c => c.id == b.dataset.ci));
+    st.nome_novo = $('#cb', m).value.trim(); acl.innerHTML = ''; setCli(null);
+  };
+  $('#cb', m).onblur = () => setTimeout(() => { acl.innerHTML = ''; const v = $('#cb', m).value.trim(); if (v && !st.cliente_id && !st.nome_novo) { st.nome_novo = v; setCli(null); } }, 150);
   $('#tb', m).onchange = e => { st.tabela_id = e.target.value; st.precos = {}; drawProds(); drawRes(); };
   $('#prods', m).onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
