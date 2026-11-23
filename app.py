@@ -11,6 +11,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, session, g, send_from_directory, render_template, Response, abort, redirect
 
 import integracoes as I
+import push
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.environ.get("CAJU_DATA") or os.path.join(BASE, "dados")
@@ -118,12 +119,15 @@ CREATE TABLE IF NOT EXISTS contas_pagar (id INTEGER PRIMARY KEY, descricao TEXT,
   pago_em TEXT, ativo INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS codigos (telefone TEXT PRIMARY KEY, codigo TEXT, expira TEXT, tentativas INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS posicoes (usuario_id INTEGER PRIMARY KEY, lat REAL, lng REAL, em TEXT);
+CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, p256dh TEXT, auth TEXT, usuario_id INTEGER, cliente_id INTEGER, criado_em TEXT);
+CREATE TABLE IF NOT EXISTS idem (id TEXT PRIMARY KEY, status INTEGER, resposta TEXT, criado_em TEXT);
 CREATE INDEX IF NOT EXISTS ix_ped_cli ON pedidos(cliente_id);
 CREATE INDEX IF NOT EXISTS ix_ped_st ON pedidos(status);
 CREATE INDEX IF NOT EXISTS ix_itens ON pedido_itens(pedido_id);
 CREATE INDEX IF NOT EXISTS ix_rec ON recebimentos(pedido_id);
 """
 CONFIG_PADRAO = {
+    "exigir_comprovante": "1",
     "empresa": "Cajuína Dona Júlia", "slogan": "Sabor que é Piauí!",
     "endereco": "Fazenda Sossego, BR 316 Km 208 · Valença do Piauí/PI",
     "telefones": "(86) 99956-3817 · (86) 99941-7686", "whatsapp": "86999417686", "instagram": "cajuinadonajulia",
@@ -201,6 +205,131 @@ def exige(*ps):
 
 def registrar(acao, detalhe=""):
     db().execute("INSERT INTO log (usuario,acao,detalhe,criado_em) VALUES (?,?,?,?)", (eu(), acao, str(detalhe)[:300], agora()))
+
+
+# ------------------------------------------------------------------ offline: cada ação enviada do aparelho tem um id único;
+# se a mesma ação chegar duas vezes (reenvio depois de cair a internet), devolvemos a resposta da primeira.
+IDEM_LOCK = threading.Lock()
+
+
+@app.before_request
+def idem_antes():
+    k = request.headers.get("X-Id-Local")
+    if k and request.method in ("POST", "PUT", "DELETE"):
+        IDEM_LOCK.acquire()          # uma ação com id por vez: evita duplicar se o mesmo envio chegar em paralelo
+        g.idem_lock = True
+        r = db().execute("SELECT status, resposta FROM idem WHERE id=?", (k[:80],)).fetchone()
+        if r:
+            return app.response_class(r["resposta"], status=r["status"], mimetype="application/json")
+
+
+@app.teardown_request
+def idem_solta(exc=None):
+    if g.pop("idem_lock", None):
+        IDEM_LOCK.release()
+
+
+@app.after_request
+def idem_depois(resp):
+    k = request.headers.get("X-Id-Local")
+    if k and request.method in ("POST", "PUT", "DELETE") and 200 <= resp.status_code < 300 and resp.mimetype == "application/json":
+        try:
+            d = db()
+            d.execute("INSERT OR IGNORE INTO idem VALUES (?,?,?,?)", (k[:80], resp.status_code, resp.get_data(as_text=True), agora()))
+            d.execute("DELETE FROM idem WHERE criado_em < ?", (mais_dias(hoje(), -30),))
+            d.commit()
+        except Exception:
+            pass
+    return resp
+
+
+# ------------------------------------------------------------------ notificações (Web Push)
+def vapid():
+    c = cfg_all()
+    if not c.get("vapid_priv"):
+        pv, pb = push.gerar_chaves()
+        db().execute("INSERT OR REPLACE INTO config VALUES ('vapid_priv',?)", (pv,))
+        db().execute("INSERT OR REPLACE INTO config VALUES ('vapid_pub',?)", (pb,))
+        db().commit()
+        return pv, pb
+    return c["vapid_priv"], c["vapid_pub"]
+
+
+def _enviar_lote(subs, dados, pv, pb):
+    mortos = [s["endpoint"] for s in subs if push.enviar(s, dados, pv, pb) in (404, 410)]
+    if mortos:
+        con = sqlite3.connect(DB_PATH)
+        con.executemany("DELETE FROM push_subs WHERE endpoint=?", [(m,) for m in mortos])
+        con.commit()
+        con.close()
+
+
+def notificar_equipe(titulo, corpo, url="/", perm="pedidos", exceto_uid=None, tag=None):
+    """Manda para todo mundo da equipe que tem a permissão e ativou as notificações no aparelho."""
+    try:
+        subs = []
+        for s in db().execute("""SELECT s.*, u.permissoes FROM push_subs s JOIN usuarios u ON u.id=s.usuario_id
+                                 WHERE u.ativo=1 AND s.usuario_id IS NOT NULL"""):
+            if s["usuario_id"] == exceto_uid:
+                continue
+            if perm and perm not in json.loads(s["permissoes"] or "[]"):
+                continue
+            subs.append(dict(s))
+        if subs:
+            pv, pb = vapid()
+            push.em_segundo_plano(_enviar_lote, subs, {"t": titulo, "b": corpo, "u": url, "tag": tag or url}, pv, pb)
+    except Exception as e:
+        print("push equipe:", e)
+
+
+def notificar_cliente(cliente_id, titulo, corpo, url="/cliente", tag=None):
+    try:
+        subs = rows(db().execute("SELECT * FROM push_subs WHERE cliente_id=?", (cliente_id,)))
+        if subs:
+            pv, pb = vapid()
+            push.em_segundo_plano(_enviar_lote, subs, {"t": titulo, "b": corpo, "u": url, "tag": tag or url}, pv, pb)
+    except Exception as e:
+        print("push cliente:", e)
+
+
+@app.get("/api/push/chave")
+def push_chave():
+    return jsonify(chave=vapid()[1])
+
+
+@app.post("/api/push/assinar")
+def push_assinar():
+    j = request.json or {}
+    k = j.get("keys") or {}
+    if not j.get("endpoint") or not k.get("p256dh") or not k.get("auth"):
+        return jsonify(erro="Inscrição inválida"), 400
+    uid = session.get("uid")
+    cid = session.get("cli") if not uid else None
+    if not uid and not cid:
+        return jsonify(erro="Faça login"), 401
+    db().execute("INSERT OR REPLACE INTO push_subs VALUES (?,?,?,?,?,?)", (j["endpoint"], k["p256dh"], k["auth"], uid, cid, agora()))
+    db().commit()
+    return jsonify(ok=True)
+
+
+@app.post("/api/push/sair")
+def push_sair():
+    db().execute("DELETE FROM push_subs WHERE endpoint=?", ((request.json or {}).get("endpoint", ""),))
+    db().commit()
+    return jsonify(ok=True)
+
+
+@app.post("/api/push/teste")
+def push_teste():
+    ep = (request.json or {}).get("endpoint", "")
+    s = one(db().execute("SELECT * FROM push_subs WHERE endpoint=?", (ep,)))
+    if not s:
+        return jsonify(erro="Este aparelho não está inscrito"), 400
+    pv, pb = vapid()
+    st = push.enviar(s, {"t": "Cajuína Dona Júlia 🔔", "b": "Notificações funcionando neste aparelho!", "u": "/", "tag": "teste"}, pv, pb)
+    if st not in (200, 201, 202):
+        return jsonify(erro=f"O serviço de notificação recusou ({st or 'sem conexão'})"), 400
+    return jsonify(ok=True)
 
 
 @app.post("/api/login")
@@ -419,7 +548,7 @@ def em_aberto_cliente(cid):
 
 def pedido_completo(pid):
     d = db()
-    p = one(d.execute("""SELECT p.*, c.nome cliente, c.telefone, c.tipo cliente_tipo, c.endereco, c.bairro, c.cidade, c.documento,
+    p = one(d.execute("""SELECT p.*, c.nome cliente, c.contato, c.telefone, c.tipo cliente_tipo, c.endereco, c.bairro, c.cidade, c.documento,
         c.lat, c.lng, r.nome rota, t.nome tabela, u.nome entregador FROM pedidos p LEFT JOIN clientes c ON c.id=p.cliente_id
         LEFT JOIN rotas r ON r.id=p.rota_id LEFT JOIN tabelas t ON t.id=p.tabela_id LEFT JOIN usuarios u ON u.id=p.entregador_id
         WHERE p.id=?""", (pid,)))
@@ -433,6 +562,9 @@ def pedido_completo(pid):
     p["recebimentos"] = rows(d.execute("SELECT * FROM recebimentos WHERE pedido_id=? ORDER BY id", (pid,)))
     p["aberto"] = round(p["total"] - p["pago"], 2)
     p["vencido"] = p["aberto"] > 0.009 and p["status"] != "cancelado" and (p["vencimento"] or "9") < hoje()
+    p["comprovante"] = bool(p.get("canhoto"))
+    p["comprovante_url"] = f"/api/pedidos/{p['id']}/comprovante.jpg?v={p.get('comprovante_em') or ''}" if p["comprovante"] else ""
+    p.pop("canhoto", None)
     return p
 
 
@@ -506,7 +638,10 @@ def pedido_novo():
         return jsonify(erro=str(e)), 400
     registrar("pedido criado", f"#{db().execute('SELECT numero FROM pedidos WHERE id=?', (pid,)).fetchone()[0]}")
     db().commit()
-    return jsonify(pedido_completo(pid))
+    p = pedido_completo(pid)
+    notificar_equipe(f"Novo pedido #{p['numero']}", f"{p.get('cliente') or 'Balcão'} · {brl(p['total'])} · por {eu()}", "/#pedidos",
+                     exceto_uid=session.get("uid"), tag=f"ped{pid}")
+    return jsonify(p)
 
 
 @app.put("/api/pedidos/<int:pid>/itens")
@@ -548,6 +683,58 @@ def pedido_editar(pid):
     return jsonify(r)
 
 
+# ------------------------------------------------------------------ comprovante de entrega (foto do espelho assinado)
+COMPROV = os.path.join(DATA, "comprovantes")
+
+
+def salvar_comprovante(pid, foto, recebido_por="", obs=""):
+    import base64 as _b64
+    sets, vals = ["recebido_por=?", "comprovante_em=?", "comprovante_por=?", "comprovante_obs=?"], \
+        [(recebido_por or "")[:80], agora(), eu(), (obs or "")[:200]]
+    if foto:
+        if "," not in foto or not foto.startswith("data:image"):
+            raise ValueError("Foto inválida")
+        dados = _b64.b64decode(foto.split(",", 1)[1])
+        if len(dados) > 3_000_000:
+            raise ValueError("Foto muito grande")
+        os.makedirs(COMPROV, exist_ok=True)
+        with open(os.path.join(COMPROV, f"{pid}.jpg"), "wb") as f:
+            f.write(dados)
+        sets.append("canhoto=?"); vals.append("arquivo")
+    db().execute(f"UPDATE pedidos SET {','.join(sets)} WHERE id=?", vals + [pid])
+
+
+@app.post("/api/pedidos/<int:pid>/comprovante")
+@exige("pedidos", "entregas")
+def pedido_comprovante(pid):
+    j = request.json or {}
+    p = pedido_completo(pid)
+    if not p:
+        abort(404)
+    if not j.get("foto"):
+        return jsonify(erro="Envie a foto do espelho assinado"), 400
+    try:
+        salvar_comprovante(pid, j["foto"], j.get("recebido_por") or p.get("recebido_por") or "", "")
+    except ValueError as e:
+        return jsonify(erro=str(e)), 400
+    registrar("comprovante de entrega", f"#{p['numero']}")
+    db().commit()
+    return jsonify(pedido_completo(pid))
+
+
+@app.get("/api/pedidos/<int:pid>/comprovante.jpg")
+@exige("pedidos", "entregas", "financeiro", "rotas")
+def pedido_comprovante_img(pid):
+    arq = os.path.join(COMPROV, f"{pid}.jpg")
+    if os.path.exists(arq):
+        return send_from_directory(COMPROV, f"{pid}.jpg", max_age=3600)
+    r = db().execute("SELECT canhoto FROM pedidos WHERE id=?", (pid,)).fetchone()
+    if r and (r[0] or "").startswith("data:image"):   # fotos antigas guardadas no banco
+        import base64 as _b64
+        return Response(_b64.b64decode(r[0].split(",", 1)[1]), mimetype="image/jpeg")
+    abort(404)
+
+
 @app.post("/api/pedidos/<int:pid>/status")
 @exige("pedidos", "rotas", "entregas")
 def pedido_status(pid):
@@ -575,15 +762,36 @@ def pedido_status(pid):
             sets.append(f"{col}=?"); vals.append(agora())
         if novo == "em_rota" and j.get("entregador_id"):
             sets.append("entregador_id=?"); vals.append(int(j["entregador_id"]))
-        if novo == "entregue" and j.get("canhoto"):
-            sets.append("canhoto=?"); vals.append(j["canhoto"][:400000])
+        if novo == "entregue" and not j.get("canhoto") and not (j.get("sem_comprovante") or "").strip() \
+                and cfg_all().get("exigir_comprovante") == "1" and p["status"] != "entregue":
+            return jsonify(erro="Tire a foto do espelho assinado (ou informe por que o cliente não assinou)"), 400
         vals.append(pid)
         d.execute(f"UPDATE pedidos SET {','.join(sets)} WHERE id=?", vals)
+        if novo == "entregue" and (j.get("canhoto") or j.get("sem_comprovante")):
+            try:
+                salvar_comprovante(pid, j.get("canhoto"), j.get("recebido_por", ""), j.get("sem_comprovante", ""))
+            except ValueError as e:
+                d.rollback()
+                return jsonify(erro=str(e)), 400
         if novo == "entregue" and j.get("receber") and p["aberto"] > 0:
             receber(pid, p["aberto"], j.get("forma", "dinheiro"), eu())
     registrar(f"pedido {novo}", f"#{p['numero']}")
     d.commit()
-    return jsonify(pedido_completo(pid))
+    q = pedido_completo(pid)
+    msg_cli = {"separando": ("Seu pedido está sendo separado 📦", f"Pedido #{p['numero']} já está em preparação."),
+               "em_rota": ("Seu pedido saiu para entrega 🚚", f"Pedido #{p['numero']} está a caminho."),
+               "entregue": ("Pedido entregue ✓", f"Pedido #{p['numero']} foi entregue. Obrigado pela preferência!")}.get(novo)
+    if msg_cli and p.get("cliente_id"):
+        notificar_cliente(p["cliente_id"], *msg_cli, url="/cliente", tag=f"ped{pid}")
+    if novo == "em_rota":
+        notificar_equipe("Nova entrega na sua rota 🚚", f"#{p['numero']} · {p.get('cliente') or ''}", "/#entregas", perm="entregas",
+                         exceto_uid=session.get("uid"), tag=f"ent{pid}")
+    if novo == "entregue":
+        notificar_equipe(f"Pedido #{p['numero']} entregue ✓", f"{p.get('cliente') or ''} · por {eu()}" + (f" · recebido {brl(q['pago'])}" if q["pago"] > p["pago"] else ""),
+                         "/#pedidos", exceto_uid=session.get("uid"), tag=f"ped{pid}")
+    if novo == "cancelado":
+        notificar_equipe(f"Pedido #{p['numero']} cancelado", f"{p.get('cliente') or ''} · por {eu()}", "/#pedidos", exceto_uid=session.get("uid"), tag=f"ped{pid}")
+    return jsonify(q)
 
 
 @app.post("/api/pedidos/<int:pid>/receber")
@@ -596,7 +804,10 @@ def pedido_receber(pid):
         return jsonify(erro=str(e)), 400
     registrar("recebimento", f"pedido {pid} {brl(v)}")
     db().commit()
-    return jsonify(pedido_completo(pid))
+    q = pedido_completo(pid)
+    notificar_equipe(f"💰 Recebido {brl(v)}", f"Pedido #{q['numero']} · {q.get('cliente') or ''} · por {eu()}", "/#financeiro",
+                     perm="financeiro", exceto_uid=session.get("uid"), tag=f"rec{pid}")
+    return jsonify(q)
 
 
 @app.get("/api/pedidos/<int:pid>/whatsapp")
@@ -627,7 +838,7 @@ def pix_payload(valor, txid):
 def render_espelho(p, auto=False):
     pix = pix_payload(p["aberto"], f"PED{p['numero']}") if p["aberto"] > 0.009 else ""
     return render_template("espelho.html", p=p, c=cfg_all(), pix=pix, qr=bool(pix and I.segno), auto=auto, hoje=hoje(),
-                           link=link_publico(p))
+                           link=link_publico(p), interno="uid" in session)
 
 
 @app.get("/espelho/<int:pid>")
@@ -910,8 +1121,6 @@ def painel():
         GROUP BY l.id HAVING saldo>0 AND validade<=? ORDER BY validade""", (mais_dias(hoje(), 60),)):
         dd = (datetime.strptime(l["validade"], "%Y-%m-%d") - datetime.strptime(hoje(), "%Y-%m-%d")).days
         alertas.append({"tipo": "lote", "nivel": "bad" if dd <= 30 else "warn", "texto": f"Lote {l['codigo']} vence em {dd} dias", "extra": f"{l['saldo']} un"})
-    for i in d.execute("SELECT nome, estoque, minimo, unidade FROM insumos WHERE ativo=1 AND estoque<=minimo"):
-        alertas.append({"tipo": "insumo", "nivel": "bad", "texto": f"{i['nome']} abaixo do mínimo", "extra": f"{i['estoque']:g} {i['unidade']}"})
     for p in estoque:
         if p["minimo"] and p["saldo"] <= p["minimo"]:
             alertas.append({"tipo": "produto", "nivel": "warn", "texto": f"{p['nome']}: estoque baixo", "extra": f"{p['saldo']} un"})
@@ -1146,7 +1355,9 @@ def c_pedido():
             msg = "Este pedido passa do seu limite de compra a prazo. Pague os pedidos em aberto ou fale com a gente no WhatsApp."
         return jsonify(erro=msg), 400
     db().commit()
-    return jsonify(pedido_completo(pid) | {"link": link_publico(pedido_completo(pid))})
+    q = pedido_completo(pid)
+    notificar_equipe(f"🛒 Pedido online #{q['numero']}", f"{q.get('cliente') or ''} · {brl(q['total'])} · pela área do cliente", "/#pedidos", tag=f"ped{pid}")
+    return jsonify(q | {"link": link_publico(q)})
 
 
 # ------------------------------------------------------------------ config
@@ -1175,6 +1386,8 @@ def demo_limpar():
         d.execute(f"DELETE FROM {t}")
     d.execute("UPDATE insumos SET estoque=0")
     d.execute("UPDATE config SET valor='0' WHERE chave='demo'")
+    import shutil
+    shutil.rmtree(COMPROV, ignore_errors=True)
     d.commit()
     return jsonify(ok=True)
 
@@ -1229,6 +1442,11 @@ def init_db():
     con = sqlite3.connect(DB_PATH)
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(SCHEMA)
+    # colunas novas em bancos que já existiam
+    for tab, col, tipo in [("pedidos", "recebido_por", "TEXT DEFAULT ''"), ("pedidos", "comprovante_em", "TEXT DEFAULT ''"),
+                           ("pedidos", "comprovante_por", "TEXT DEFAULT ''"), ("pedidos", "comprovante_obs", "TEXT DEFAULT ''")]:
+        if col not in [r[1] for r in con.execute(f"PRAGMA table_info({tab})")]:
+            con.execute(f"ALTER TABLE {tab} ADD COLUMN {col} {tipo}")
     for k, v in CONFIG_PADRAO.items():
         con.execute("INSERT OR IGNORE INTO config VALUES (?,?)", (k, v))
     vazio = con.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0] == 0

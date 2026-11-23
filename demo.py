@@ -245,3 +245,58 @@ def popular(d, demo, A):
     d.execute("INSERT OR REPLACE INTO posicoes VALUES (?,?,?,?)", (entregador, lat + .012, lng + .02, fmt(datetime.strptime(A.agora(), "%Y-%m-%d %H:%M:%S"))))
     for u, a in [("Lira (dono)", "login"), ("Ana · vendas", "pedido criado"), ("Zé · produção", "lote produzido"), ("João · entregas", "pedido entregue")]:
         d.execute("INSERT INTO log (usuario,acao,detalhe,criado_em) VALUES (?,?,?,?)", (u, a, "demonstração", A.agora()))
+
+    # ---- comprovantes de entrega: foto simulada do espelho assinado nas entregas recentes
+    try:
+        comprovantes_demo(d, A)
+    except Exception as e:
+        print("demo comprovantes:", e)
+
+
+def comprovantes_demo(d, A):
+    import os, math
+    from PIL import Image, ImageDraw, ImageFont
+    os.makedirs(A.COMPROV, exist_ok=True)
+    nomes = ["Maria", "Seu Antônio", "Carla (gerente)", "Josué", "Dona Rita", "Paulo (caixa)"]
+    try:
+        fb = ImageFont.truetype("DejaVuSans-Bold.ttf", 30); fn = ImageFont.truetype("DejaVuSans.ttf", 22)
+    except Exception:
+        fb = fn = ImageFont.load_default()
+    rnd = random.Random(7)
+    ps = d.execute("""SELECT p.id, p.numero, p.total, p.entregue_em, c.nome, c.contato FROM pedidos p LEFT JOIN clientes c ON c.id=p.cliente_id
+                      WHERE p.status='entregue' AND p.cliente_id IS NOT NULL ORDER BY p.id DESC""").fetchall()
+    for k, p in enumerate(ps):
+        quem = (p["contato"] or rnd.choice(nomes)).split(" ")[0] if k % 3 else rnd.choice(nomes)
+        if k >= 12:   # entregas antigas: só o nome de quem recebeu
+            d.execute("UPDATE pedidos SET recebido_por=?, comprovante_em=entregue_em, comprovante_por='João · entregas' WHERE id=?", (quem, p["id"]))
+            continue
+        W, H = 900, 1200
+        im = Image.new("RGB", (W, H), (246, 242, 232))
+        g = ImageDraw.Draw(im)
+        g.rectangle([0, 0, W, 22], fill=(246, 180, 0))
+        g.text((50, 60), "CAJUÍNA DONA JÚLIA", font=fb, fill=(43, 27, 20))
+        g.text((560, 60), f"Nº {p['numero']:04d}", font=fb, fill=(43, 27, 20))
+        g.text((50, 110), "ESPELHO DE PEDIDO", font=fn, fill=(215, 38, 30))
+        g.line([50, 150, W - 50, 150], fill=(43, 27, 20), width=3)
+        g.text((50, 180), f"Cliente: {p['nome']}", font=fn, fill=(60, 50, 40))
+        g.rectangle([50, 240, W - 50, 280], fill=(43, 27, 20))
+        for i in range(4):
+            y = 300 + i * 50
+            g.line([60, y + 20, 60 + rnd.randint(250, 420), y + 20], fill=(120, 110, 100), width=6)
+            g.line([W - 220, y + 20, W - 70, y + 20], fill=(120, 110, 100), width=6)
+        g.text((W - 330, 560), f"TOTAL R$ {p['total']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), font=fb, fill=(43, 27, 20))
+        for x0 in (50, 470):
+            g.line([x0, 930, x0 + 380, 930], fill=(150, 140, 130), width=2)
+        g.text((50, 940), "Recebido por (nome legível)", font=fn, fill=(120, 110, 100))
+        g.text((470, 940), "Assinatura", font=fn, fill=(120, 110, 100))
+        g.text((70, 870), quem, font=fb, fill=(25, 45, 120))
+        pts, x = [], 490
+        for t in range(90):          # rabisco de assinatura
+            x += rnd.uniform(2, 5)
+            pts.append((x, 900 + 22 * math.sin(t / 3.2 + rnd.uniform(-.4, .4)) - t * .15))
+        g.line(pts, fill=(25, 45, 120), width=4)
+        dt = (p["entregue_em"] or A.agora())[:10]
+        g.text((50, 1000), f"Data: {dt[8:10]}/{dt[5:7]}/{dt[:4]}", font=fn, fill=(25, 45, 120))
+        im = im.rotate(rnd.uniform(-3, 3), expand=True, fillcolor=(90, 70, 55)).resize((750, 1000))
+        im.save(os.path.join(A.COMPROV, f"{p['id']}.jpg"), quality=70)
+        d.execute("UPDATE pedidos SET canhoto='arquivo', recebido_por=?, comprovante_em=entregue_em, comprovante_por='João · entregas' WHERE id=?", (quem, p["id"]))

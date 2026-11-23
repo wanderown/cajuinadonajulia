@@ -37,15 +37,154 @@ const estqTxt = (p, q) => { const cx = p.un_caixa || 1; return cx > 1 && q >= cx
 const ico = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICO[k] || ''}</svg>`;
 const S = { me: null, b: null, poll: null };
 
+// ---------------------------------------------------------------- rede e modo offline
+// GET: guarda a última resposta no aparelho e usa ela quando não tem internet.
+// POST/PUT: sem internet, a ação vai para uma fila (outbox) e é enviada sozinha quando a conexão volta.
+// Cada ação leva um id único (X-Id-Local); se chegar repetida, o servidor devolve a resposta da primeira.
+const NET = { on: navigator.onLine, sync: false };
+const OUT = 'caju_outbox', FALHAS = 'caju_falhas', CK = 'caju_c:';
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+const ls = { get: (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { limparCache(); try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) { } } } };
+function limparCache() { Object.keys(localStorage).filter(k => k.startsWith(CK)).forEach(k => localStorage.removeItem(k)); }
+const fila = () => ls.get(OUT, []), falhas = () => ls.get(FALHAS, []);
+const SEM_FILA = /\/api\/(login|logout|me$|demo|push|posicao|backup|feira\/venda|c\/)|whatsapp|codigo/;
+function semRede(e) { return e instanceof TypeError || /Failed to fetch|NetworkError|Load failed/i.test(e?.message || ''); }
+function setNet(on) { if (NET.on !== on) { NET.on = on; barraRede(); if (on) sincronizar(); } }
 async function api(url, opts = {}) {
   const o = { method: opts.method || (opts.body !== undefined ? 'POST' : 'GET'), headers: {} };
   if (opts.body !== undefined) { o.headers['Content-Type'] = 'application/json'; o.body = JSON.stringify(opts.body); }
-  let r; try { r = await fetch(url, o); } catch (e) { throw new Error('Sem conexão com a internet'); }
+  const get = o.method === 'GET', enfileira = !get && !SEM_FILA.test(url);
+  if (enfileira) o.headers['X-Id-Local'] = opts.idLocal || uid();
+  let r;
+  try {
+    if (!get && enfileira && fila().length) throw new TypeError('fila'); // mantém a ordem: se já tem fila, entra no fim dela
+    r = await fetch(url, o);
+  } catch (e) {
+    setNet(e.message === 'fila' ? NET.on : false);
+    if (get) { const c = ls.get(CK + url); if (c !== undefined) return c; throw new Error('Sem internet e esta tela ainda não foi aberta neste aparelho'); }
+    if (enfileira) {
+      const item = { id: o.headers['X-Id-Local'], url, method: o.method, body: opts.body, em: new Date().toISOString(), desc: opts.desc || descAcao(url, opts.body), resumo: opts.resumo || null };
+      ls.set(OUT, [...fila(), item]); otimista(url, opts.body); barraRede();
+      if (!NET.on || e.message === 'fila') setTimeout(sincronizar, 400);
+      return { _offline: true, id: null, numero: '—' };
+    }
+    throw new Error('Sem conexão com a internet');
+  }
+  setNet(true);
   if (r.status === 401 && !url.includes('login')) { S.me = null; render(); throw new Error('Faça login novamente'); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.erro || 'Erro ' + r.status);
+  if (get) ls.set(CK + url, j);
   return j;
 }
+function descAcao(url, b) {
+  const st = { separando: 'separar', em_rota: 'saída para entrega', entregue: 'entrega', cancelado: 'cancelamento' };
+  if (url === '/api/pedidos') return 'Novo pedido';
+  let m = url.match(/\/api\/pedidos\/(\d+)\/status/); if (m) return `Pedido: ${st[b?.status] || b?.status}`;
+  if (/\/receber$/.test(url)) return `Recebimento ${brl(b?.valor || 0)}`;
+  if (/\/itens$/.test(url)) return 'Edição de pedido';
+  if (/\/api\/lotes/.test(url)) return 'Lote de produção';
+  if (/\/api\/cad\/(\w+)/.test(url)) return 'Cadastro: ' + url.match(/\/api\/cad\/(\w+)/)[1];
+  if (/estoque/.test(url)) return 'Ajuste de estoque';
+  if (/contas/.test(url)) return 'Conta paga';
+  return 'Alteração';
+}
+// atualiza as cópias salvas para a tela já mostrar o efeito da ação feita offline
+function otimista(url, b) {
+  const m = url.match(/\/api\/pedidos\/(\d+)\/(status|receber)/); if (!m) return;
+  const id = +m[1];
+  Object.keys(localStorage).filter(k => k.startsWith(CK + '/api/pedidos')).forEach(k => {
+    const v = ls.get(k); const ps = Array.isArray(v) ? v : v && v.id ? [v] : []; let mud = false;
+    ps.forEach(p => { if (p.id !== id) return; mud = true;
+      if (m[2] === 'status') { p.status = b.status; if (b.status === 'entregue' && b.receber) { p.pago = p.total; p.aberto = 0; } }
+      else { p.pago = Math.min(p.total, (p.pago || 0) + (b.valor || 0)); p.aberto = Math.max(0, p.total - p.pago); } p._pend = true; });
+    if (mud) ls.set(k, v);
+  });
+  if (S.ps) S.ps.forEach(p => { if (p.id === id && m[2] === 'status') p.status = b.status; });
+}
+async function sincronizar() {
+  if (NET.sync || !fila().length) return barraRede();
+  if (navigator.locks) return navigator.locks.request('caju-sync', { ifAvailable: true }, l => l ? sincronizarAgora() : null);
+  return sincronizarAgora();
+}
+async function sincronizarAgora() {
+  if (NET.sync || !fila().length) return barraRede();
+  NET.sync = true; barraRede(); let enviados = 0, parou = false;
+  while (fila().length) {
+    const it = fila()[0];
+    let r;
+    try { r = await fetch(it.url, { method: it.method, headers: { 'Content-Type': 'application/json', 'X-Id-Local': it.id }, body: it.body === undefined ? undefined : JSON.stringify(it.body) }); }
+    catch (e) { NET.on = false; parou = true; break; }
+    NET.on = true;
+    if (r.status === 401) { parou = true; if (S.pinOff) { try { await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: S.pinOff }) }); continue; } catch (e) { } } break; }
+    const q = fila(); q.shift(); ls.set(OUT, q);
+    if (r.ok) enviados++;
+    else { const j = await r.json().catch(() => ({})); ls.set(FALHAS, [...falhas(), { ...it, erro: j.erro || 'Erro ' + r.status }]); toast(`Não deu pra enviar "${it.desc}": ${j.erro || r.status}`, 'err'); }
+  }
+  NET.sync = false; barraRede();
+  if (enviados) {
+    ok(`✓ ${enviados} ${enviados > 1 ? 'ações enviadas' : 'ação enviada'} — tudo sincronizado`);
+    try { await carregar(); } catch (e) { }
+    if (S.me && !document.querySelector('.mb-bg')) render();
+  }
+  void parou;
+}
+function barraRede() {
+  let el = document.getElementById('net');
+  if (!el) { el = document.createElement('div'); el.id = 'net'; document.body.prepend(el); }
+  const n = fila().length, f = falhas().length;
+  if (!NET.on) { el.className = 'net off'; el.innerHTML = `📴 Sem internet · trabalhando offline${n ? ` · ${n} ${n > 1 ? 'ações' : 'ação'} aguardando envio` : ''}`; }
+  else if (NET.sync || n) { el.className = 'net sync'; el.innerHTML = `⏳ Enviando ${n} ${n > 1 ? 'ações' : 'ação'} feitas sem internet…`; }
+  else if (f) { el.className = 'net erro'; el.innerHTML = `⚠ ${f} ${f > 1 ? 'ações não foram aceitas' : 'ação não foi aceita'} pelo sistema <button id="vfal">ver</button>`; $('#vfal').onclick = verFalhas; }
+  else { el.className = ''; el.innerHTML = ''; }
+  if (n && !NET.on) el.innerHTML += ' <button id="vfila">ver</button>', $('#vfila').onclick = verFila;
+}
+function verFila() {
+  modal({ title: 'Aguardando internet', body: `<p class="small mut mb">Estas ações foram feitas sem conexão. Assim que a internet voltar, o sistema envia sozinho, na ordem.</p>${fila().map(i => `<div class="l row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)"><span><b>${esc(i.desc)}</b>${i.resumo ? `<div class="small mut">${esc(i.resumo.cliente || '')} · ${brl(i.resumo.total || 0)}</div>` : ''}</span><span class="small mut">${new Date(i.em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span></div>`).join('')}` });
+}
+function verFalhas() {
+  const m = modal({ title: 'Ações não aceitas', body: `<p class="small mut mb">Foram feitas sem internet, mas o sistema recusou ao enviar (ex.: estoque já tinha acabado). Refaça se precisar.</p>${falhas().map(i => `<div style="padding:8px 0;border-bottom:1px solid var(--line)"><b>${esc(i.desc)}</b>${i.resumo ? ` · ${esc(i.resumo.cliente || '')} · ${brl(i.resumo.total || 0)}` : ''}<div class="small red">${esc(i.erro)}</div></div>`).join('')}`, foot: '<button class="btn" id="lf">Entendi, limpar lista</button>' });
+  $('#lf', m).onclick = () => { ls.set(FALHAS, []); m.close(); barraRede(); };
+}
+window.addEventListener('online', () => { NET.on = true; sincronizar(); barraRede(); });
+window.addEventListener('offline', () => { NET.on = false; barraRede(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) sincronizar(); });
+setInterval(() => { if (fila().length) sincronizar(); }, 15000);
+
+// ---------------------------------------------------------------- tema claro/escuro
+function aplicarTema() { const t = ls.get('caju_tema', 'claro'); document.documentElement.dataset.tema = t; document.querySelector('meta[name=theme-color]')?.setAttribute('content', t === 'escuro' ? '#211812' : '#FFFFFF'); }
+function trocarTema() { ls.set('caju_tema', ls.get('caju_tema', 'claro') === 'escuro' ? 'claro' : 'escuro'); aplicarTema(); render(); }
+aplicarTema();
+
+// ---------------------------------------------------------------- notificações (Web Push)
+const b64ToU8 = s => { const p = '='.repeat((4 - s.length % 4) % 4); const r = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from([...r].map(c => c.charCodeAt(0))); };
+async function pushSub() { if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null; const reg = await navigator.serviceWorker.ready; return reg.pushManager.getSubscription(); }
+async function ativarPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window))
+    throw new Error(/iphone|ipad/i.test(navigator.userAgent) ? 'No iPhone: abra no Safari, toque em Compartilhar › Adicionar à Tela de Início e ative pelo app instalado.' : 'Este navegador não suporta notificações.');
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('Notificações bloqueadas. Libere nas configurações do navegador para este site.');
+  const reg = await navigator.serviceWorker.ready;
+  const { chave } = await api('/api/push/chave');
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(chave) });
+  await api('/api/push/assinar', { body: sub.toJSON() });
+  return sub;
+}
+async function menuNotif() {
+  const sub = await pushSub().catch(() => null);
+  const eventos = [['pedidos', 'Pedido novo (inclusive pela área do cliente), entregue ou cancelado'], ['financeiro', 'Pagamento recebido'], ['entregas', 'Nova entrega na sua rota']].filter(([p]) => pode(p));
+  const m = modal({ title: '🔔 Notificações', body: `<p class="small mb">${sub ? '<b class="grn">Ativadas neste aparelho.</b>' : 'Receba avisos no celular mesmo com o app fechado.'}</p>
+    <p class="small mut mb">Você vai ser avisado de:</p><ul class="small" style="margin:0 0 10px 18px">${eventos.map(([, t]) => `<li>${t}</li>`).join('') || '<li>Avisos gerais</li>'}</ul>
+    <p class="small mut">Cada pessoa ativa no próprio aparelho. Não avisa das ações que você mesmo fez.</p>`,
+    foot: sub ? '<button class="btn ghost" id="pdes">Desativar</button><button class="btn k" id="ptes">Enviar teste</button>' : '<button class="btn k" id="pat">Ativar neste aparelho</button>' });
+  $('#pat', m) && ($('#pat', m).onclick = async () => { try { await ativarPush(); m.close(); ok('Notificações ativadas!'); render(); } catch (e) { err(e); } });
+  $('#ptes', m) && ($('#ptes', m).onclick = async () => { try { await api('/api/push/teste', { body: { endpoint: sub.endpoint } }); ok('Teste enviado — deve chegar em segundos'); } catch (e) { err(e); } });
+  $('#pdes', m) && ($('#pdes', m).onclick = async () => { try { await api('/api/push/sair', { body: { endpoint: sub.endpoint } }); await sub.unsubscribe(); m.close(); ok('Notificações desativadas'); render(); } catch (e) { err(e); } });
+}
+const ICO2 = { sino: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20a2 2 0 0 0 4 0"/>', lua: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>', sol: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6L19 19M5 19l1.4-1.4M17.6 6.4L19 5"/>' };
+const ico2 = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICO2[k]}</svg>`;
 function toast(m, t = '') { const d = document.createElement('div'); d.className = t; d.textContent = m; $('#toast').append(d); setTimeout(() => d.remove(), 3300); }
 const ok = m => toast(m, 'ok'), err = e => toast(e.message || e, 'err');
 function modal({ title, body, foot = '', wide = false }) {
@@ -62,7 +201,8 @@ const prod = id => S.b.produtos.find(p => p.id == id);
 async function start() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => { });
   try { S.me = await api('/api/me'); } catch (e) { }
-  if (S.me) await carregar();
+  if (S.me) try { await carregar(); } catch (e) { S.me = null; }
+  barraRede(); sincronizar();
   window.addEventListener('hashchange', render);
   window.addEventListener('online', () => feiraSync());
   render();
@@ -82,10 +222,13 @@ function render() {
   const titulo = (MENU.find(m => m[0] === v) || [])[1] || '';
   $('#app').innerHTML = `${cfg('demo') === '1' ? '<div class="demo">MODO DEMONSTRAÇÃO · dados fictícios</div>' : ''}
    <div class="top"><img src="/static/logo.png" alt="Cajuína Dona Júlia"><b class="ttl">${esc(titulo)}</b><nav class="nav">${itens.map(([k, n]) => `<a href="#${k}" class="${k === v ? 'on' : ''}">${n}</a>`).join('')}</nav>
-   <div class="me"><span class="nm">${esc(S.me.nome)}</span><button id="sair">Sair</button></div></div><main id="main"></main>
+   <div class="me"><span class="nm">${esc(S.me.nome)}</span><button class="icb" id="bnot" title="Notificações">${ico2('sino')}</button><button class="icb" id="btema" title="Modo claro/escuro">${ico2(ls.get('caju_tema', 'claro') === 'escuro' ? 'sol' : 'lua')}</button><button id="sair">Sair</button></div></div><main id="main"></main>
    <nav class="bnav">${nb.map(([k, n]) => `<a href="#${k}" class="${k === v ? 'on' : ''}">${ico(k)}<span>${n.split(' ')[0]}</span></a>`).join('')}${resto.length ? `<a href="#" id="mais" class="${resto.some(m => m[0] === v) ? 'on' : ''}">${ico('mais')}<span>Mais</span></a>` : ''}</nav>`;
   $('#mais') && ($('#mais').onclick = e => { e.preventDefault(); const m = modal({ title: 'Menu', body: `<div class="maisg">${resto.map(([k, n]) => `<a href="#${k}" class="${k === v ? 'on' : ''}">${ico(k)}<span>${n}</span></a>`).join('')}</div>` }); $$('a', m).forEach(a => a.onclick = () => m.close()); });
-  $('#sair').onclick = async () => { await api('/api/logout', { body: {} }); S.me = null; location.hash = ''; render(); };
+  $('#sair').onclick = async () => { if (fila().length && !confirm('Ainda tem ações feitas sem internet esperando envio. Se sair agora, elas só vão quando alguém entrar de novo neste aparelho. Sair mesmo assim?')) return; try { await api('/api/logout', { body: {} }); } catch (e) { } S.me = null; S.pinOff = null; limparCache(); location.hash = ''; render(); };
+  $('#btema').onclick = trocarTema;
+  $('#bnot').onclick = menuNotif;
+  pushSub().then(s => s && $('#bnot')?.classList.add('on')).catch(() => { });
   ({ painel: telaPainel, pedidos: telaPedidos, producao: telaProducao, estoque: telaEstoque, clientes: telaClientes, rotas: telaRotas,
      entregas: telaEntregas, feira: telaFeira, financeiro: telaFinanceiro, equipe: telaEquipe, config: telaConfig })[v]($('#main'));
 }
@@ -95,7 +238,15 @@ function telaLogin() {
     <div class="pin">${'<i></i>'.repeat(4)}</div><div class="pad">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 'C', 0, '⏎'].map(k => `<button data-k="${k}">${k}</button>`).join('')}</div>
     <p class="small mt" id="lerr">&nbsp;</p><a href="/cliente" class="small mut" style="display:block;margin-top:8px">Sou cliente → área do cliente</a></div></div>`;
   const pins = $$('.pin i'), draw = () => pins.forEach((p, i) => p.classList.toggle('f', i < pin.length));
-  const go = async () => { try { S.me = await api('/api/login', { body: { pin } }); await carregar(); location.hash = ''; render(); } catch (e) { pin = ''; draw(); $('#lerr').innerHTML = `<b class="red">${esc(e.message)}</b>`; } };
+  const hashPin = async p => { try { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('caju:' + p)); return [...new Uint8Array(h)].map(x => x.toString(16).padStart(2, '0')).join(''); } catch (e) { return 'x' + p.length; } };
+  const go = async () => {
+    try { S.me = await api('/api/login', { body: { pin } }); ls.set(CK + '/api/me', S.me); const pins = ls.get('caju_pins', {}); pins[await hashPin(pin)] = S.me; ls.set('caju_pins', pins); await carregar(); location.hash = ''; render(); }
+    catch (e) {
+      if (/conexão/i.test(e.message)) { const me = ls.get('caju_pins', {})[await hashPin(pin)]; const b = ls.get(CK + '/api/base');
+        if (me && b) { S.me = me; S.b = b; ls.set(CK + '/api/me', me); S.pinOff = pin; location.hash = ''; render(); toast('Entrou sem internet — tudo que fizer será enviado quando a conexão voltar'); return; }
+        e = new Error('Sem internet. Para entrar offline, este PIN precisa ter entrado antes neste aparelho com internet.'); }
+      pin = ''; draw(); $('#lerr').innerHTML = `<b class="red">${esc(e.message)}</b>`; }
+  };
   const k = x => { if (x === 'C') pin = ''; else if (x === '⏎') return go(); else if (pin.length < 8) pin += x; draw(); if (pin.length >= 4 && x !== 'C') { clearTimeout(k.t); k.t = setTimeout(() => pin.length >= 4 && go(), 650); } };
   $$('.pad button').forEach(b => b.onclick = () => k(b.dataset.k));
   document.onkeydown = e => { if (S.me) return (document.onkeydown = null); if (/^\d$/.test(e.key)) k(e.key); if (e.key === 'Enter') k('⏎'); if (e.key === 'Backspace') k('C'); };
@@ -162,7 +313,8 @@ function telaPedidos(main) {
     const cols = [['novo', 'Novos'], ['separando', 'Separando'], ['em_rota', 'Em rota'], ['entregue', 'Entregues']];
     const n = st => ps.filter(p => p.status === st && f(p)).length;
     $('#kt').innerHTML = cols.map(([st, nm]) => `<button data-t="${st}" class="${st === S.kbTab ? 'on' : ''}">${nm}<em>${n(st)}</em></button>`).join('');
-    $('#kb').innerHTML = cols.map(([st, nm]) => { const l = ps.filter(p => p.status === st && f(p)); return `<div class="kcol ${st === S.kbTab ? 'on' : ''}"><h4>${nm}${st === 'entregue' ? ' (3 dias)' : ''}<em>${l.length}</em></h4>${l.map(cardPed).join('') || '<div class="empty small">Nenhum pedido aqui</div>'}</div>`; }).join('');
+    const pend = fila().filter(i => i.url === '/api/pedidos' && i.resumo).map(i => `<div class="kc pend"><div class="h"><b>⏳ ${esc(i.resumo.cliente)}</b></div><div class="small mut">aguardando internet para entrar no sistema</div><ul>${(i.resumo.itens || []).map(t => `<li>${esc(t)}</li>`).join('')}</ul><div class="f"><b class="tv">${brl(i.resumo.total)}</b><span class="pill p-warn">offline</span></div></div>`).join('');
+    $('#kb').innerHTML = cols.map(([st, nm]) => { const l = ps.filter(p => p.status === st && f(p)); if (st === 'novo' && pend) return `<div class="kcol ${st === S.kbTab ? 'on' : ''}"><h4>${nm}<em>${l.length}</em></h4>${pend}${l.map(cardPed).join('')}</div>`; return `<div class="kcol ${st === S.kbTab ? 'on' : ''}"><h4>${nm}${st === 'entregue' ? ' (3 dias)' : ''}<em>${l.length}</em></h4>${l.map(cardPed).join('') || '<div class="empty small">Nenhum pedido aqui</div>'}</div>`; }).join('');
   };
   $('#kb').onclick = e => { const a = e.target.closest('[data-act]'); if (a) { e.stopPropagation(); return acao(+a.dataset.id, a.dataset.act); } const c = e.target.closest('[data-pid]'); if (c) detalhePedido(+c.dataset.pid); };
   const load = async () => { try { draw(await api('/api/pedidos?ativos=1')); } catch (e) { } };
@@ -173,14 +325,14 @@ function cardPed(p) {
   return `<div class="kc ${p.vencido ? 'venc' : p.cliente_tipo === 'revenda' ? 'rev' : p.canal === 'online' ? 'onl' : ''}" data-pid="${p.id}">
     <div class="h"><b>#${p.numero} · ${esc(p.cliente || 'Feira/balcão')}</b></div><div class="row" style="gap:4px;margin-top:3px">${pillCanal(p)}${p.rota ? `<span class="pill p-bal">${esc(p.rota)}</span>` : ''}</div>
     <ul>${itensTxt(p)}</ul><div class="f"><b class="tv">${brl(p.total)}</b>${pagPill(p)}</div>
-    ${p.entregador ? `<div class="small mut">🚚 ${esc(p.entregador)}</div>` : ''}
+    ${p.entregador ? `<div class="small mut">🚚 ${esc(p.entregador)}${p.status === 'entregue' ? (p.comprovante ? ' · <span class="grn b">📎 assinado</span>' : ' · <span class="red b">sem assinatura</span>') : ''}</div>` : p.status === 'entregue' && p.comprovante ? '<div class="small grn b">📎 espelho assinado</div>' : ''}
     ${prox && (pode('pedidos') || pode('rotas')) ? `<div class="acts"><button class="btn sm ghost" data-act="espelho" data-id="${p.id}">Espelho</button><button class="btn sm ${p.status === 'em_rota' ? 'g' : 'k'}" data-act="${prox[0]}" data-id="${p.id}">${prox[1]}</button></div>` : ''}</div>`;
 }
 async function acao(id, act) {
   try {
     if (act === 'espelho') return window.open('/espelho/' + id, '_blank');
     if (act === 'em_rota') return despachar([id]);
-    if (act === 'entregue') return entregar(await api('/api/pedidos/' + id));
+    if (act === 'entregue') return entregar(await api('/api/pedidos/' + id).catch(e => { const x = (S.ps || []).find(p => p.id === id); if (x) return x; throw e; }));
     await api(`/api/pedidos/${id}/status`, { body: { status: act } }); ok(act === 'separando' ? 'Em separação' : 'Atualizado'); render();
   } catch (e) { err(e); }
 }
@@ -193,19 +345,38 @@ function despachar(ids) {
 }
 function entregar(p, aposOk) {
   let foto = '';
+  const exige = cfg('exigir_comprovante') === '1';
   const m = modal({
     title: `Entregar #${p.numero} · ${esc(p.cliente || '')}`, body: `${p.aberto > 0.009 ? (p.condicao === 'vista' ? `<div class="banner">💰 Cobrar <b>${brl(p.aberto)}</b> na entrega</div>` : `<p class="mb">A prazo · vence <b>${dbr(p.vencimento)}</b> (${brl(p.aberto)})</p>`) : '<p class="mb grn b">✓ Já está pago</p>'}
     ${p.aberto > 0.009 ? `<label style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="rec" style="width:auto" ${p.condicao === 'vista' ? 'checked' : ''}> Recebi o pagamento agora</label>
     <div class="chips mt" id="fr">${['pix', 'dinheiro', 'credito', 'debito'].map(f => `<button data-f="${f}" class="${f === (p.forma || 'pix') ? 'on' : ''}">${FORMAS[f]}</button>`).join('')}</div>` : ''}
-    <label class="mt">Foto do canhoto assinado (opcional)</label><input type="file" accept="image/*" capture="environment" id="ft"><img id="prev" style="max-width:100%;margin-top:8px;border-radius:10px;display:none">`,
-    foot: `<button class="btn g lg" id="ok">✓ Confirmar entrega</button>`
+    <label class="mt">Comprovante de entrega${exige ? '' : ' (opcional)'}</label>
+    <label class="foto-btn" id="fb"><input type="file" accept="image/*" capture="environment" id="ft" hidden><span>📷</span><b>Fotografar o espelho assinado</b><small>Peça para o cliente assinar o espelho impresso e tire a foto inteira, com boa luz</small></label>
+    <img id="prev" class="foto-prev">
+    <label class="mt">Nome de quem recebeu</label><input id="rpor" placeholder="ex.: Maria (gerente)" value="${esc(p.contato || '')}">
+    ${exige ? `<p class="small mt"><a href="#" id="semass">O cliente não assinou?</a></p><div id="semd" style="display:none"><label>Por que não tem assinatura?</label><input id="semm" placeholder="ex.: deixado com o porteiro, cliente ausente"></div>` : ''}`,
+    foot: `<button class="btn g lg" id="ok" ${exige ? 'disabled' : ''}>✓ Confirmar entrega</button>`
   });
   let forma = p.forma || 'pix';
+  const libera = () => { $('#ok', m).disabled = exige && !foto && !($('#semm', m)?.value.trim()); };
   $('#fr', m) && ($('#fr', m).onclick = e => { const b = e.target.closest('[data-f]'); if (!b) return; forma = b.dataset.f; $$('#fr button', m).forEach(x => x.classList.toggle('on', x === b)); });
-  $('#ft', m).onchange = async e => { foto = await reduzir(e.target.files[0], 900, .6); $('#prev', m).src = foto; $('#prev', m).style.display = 'block'; };
+  $('#ft', m).onchange = async e => { if (!e.target.files[0]) return; foto = await reduzir(e.target.files[0], 1500, .62); $('#prev', m).src = foto; $('#prev', m).style.display = 'block'; $('#fb', m).classList.add('ok'); $('#fb b', m).textContent = '✓ Foto do espelho anexada (toque para refazer)'; libera(); };
+  $('#semass', m) && ($('#semass', m).onclick = e => { e.preventDefault(); $('#semd', m).style.display = 'block'; $('#semm', m).focus(); });
+  $('#semm', m) && ($('#semm', m).oninput = libera);
   $('#ok', m).onclick = async () => {
-    try { await api(`/api/pedidos/${p.id}/status`, { body: { status: 'entregue', canhoto: foto, receber: $('#rec', m)?.checked, forma } }); m.close(); ok('Entrega confirmada'); aposOk ? aposOk() : render(); } catch (e) { err(e); }
+    $('#ok', m).disabled = true;
+    try {
+      const r = await api(`/api/pedidos/${p.id}/status`, { body: { status: 'entregue', canhoto: foto, recebido_por: $('#rpor', m).value.trim(), sem_comprovante: $('#semm', m)?.value.trim() || '', receber: $('#rec', m)?.checked, forma } });
+      m.close(); r._offline ? toast('📴 Sem internet: entrega e foto salvas no aparelho, vão sozinhas quando a conexão voltar') : ok('Entrega confirmada'); aposOk ? aposOk() : render();
+    } catch (e) { err(e); libera(); }
   };
+}
+function anexarComprovante(p) {
+  const m = modal({ title: `Espelho assinado · #${p.numero}`, body: `<label class="foto-btn" id="fb"><input type="file" accept="image/*" capture="environment" id="ft" hidden><span>📷</span><b>Fotografar o espelho assinado</b><small>Ou escolha uma foto da galeria</small></label><img id="prev" class="foto-prev">
+    <label class="mt">Nome de quem recebeu</label><input id="rpor" value="${esc(p.recebido_por || '')}">`, foot: '<button class="btn g" id="ok" disabled>Salvar comprovante</button>' });
+  let foto = '';
+  $('#ft', m).onchange = async e => { if (!e.target.files[0]) return; foto = await reduzir(e.target.files[0], 1500, .62); $('#prev', m).src = foto; $('#prev', m).style.display = 'block'; $('#fb', m).classList.add('ok'); $('#ok', m).disabled = false; };
+  $('#ok', m).onclick = async () => { try { const r = await api(`/api/pedidos/${p.id}/comprovante`, { body: { foto, recebido_por: $('#rpor', m).value.trim() } }); m.close(); r._offline ? toast('📴 Foto salva no aparelho, envia quando voltar a internet') : ok('Comprovante salvo'); if (!r._offline) detalhePedido(p.id); } catch (e) { err(e); } };
 }
 function reduzir(arq, max = 900, q = .7) {
   return new Promise((res, rej) => { const fr = new FileReader(), img = new Image(); fr.onload = () => img.src = fr.result; img.onload = () => { const s = Math.min(1, max / Math.max(img.width, img.height)); const cv = document.createElement('canvas'); cv.width = img.width * s; cv.height = img.height * s; cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); res(cv.toDataURL('image/jpeg', q)); }; img.onerror = rej; fr.readAsDataURL(arq); });
@@ -222,7 +393,11 @@ async function detalhePedido(id) {
       <tr><td colspan="4"><b>Total</b></td><td class="n"><b>${brl(p.total)}</b></td></tr>${p.pago ? `<tr><td colspan="4">Recebido</td><td class="n grn">${brl(p.pago)}</td></tr>` : ''}</table>
       ${p.recebimentos.length ? `<p class="small mut mt">${p.recebimentos.map(r => `${dbr(r.data)} · ${FORMAS[r.forma] || r.forma} · ${brl(r.valor)} (${esc(r.usuario)})`).join('<br>')}</p>` : ''}
       ${p.obs ? `<p class="mt"><b>Obs:</b> ${esc(p.obs)}</p>` : ''}${p.cancel_motivo ? `<p class="mt red"><b>Cancelado:</b> ${esc(p.cancel_motivo)}</p>` : ''}
-      ${p.canhoto ? `<p class="mt"><b>Canhoto:</b><br><img src="${p.canhoto}" style="max-width:260px;border-radius:10px;margin-top:4px"></p>` : ''}
+      ${p.status === 'entregue' ? `<div class="comp ${p.comprovante ? 'ok' : ''}">${p.comprovante ? `<a href="${p.comprovante_url}" target="_blank"><img src="${p.comprovante_url}" alt="Espelho assinado"></a>` : '<div class="semf">📄</div>'}
+        <div><b>${p.comprovante ? '✓ Entrega comprovada com espelho assinado' : 'Entrega sem foto do espelho assinado'}</b>
+        <div class="small mut">${p.recebido_por ? 'Recebido por <b>' + esc(p.recebido_por) + '</b> · ' : ''}${dbr(p.comprovante_em || p.entregue_em || '')} ${(p.comprovante_em || p.entregue_em || '').slice(11, 16)}${p.entregador ? ' · ' + esc(p.entregador) : ''}</div>
+        ${p.comprovante_obs ? `<div class="small">Motivo: ${esc(p.comprovante_obs)}</div>` : ''}
+        ${pode('pedidos') || pode('entregas') ? `<button class="btn sm ghost mt" id="anx">📷 ${p.comprovante ? 'Trocar foto' : 'Anexar espelho assinado'}</button>` : ''}</div></div>` : ''}
       <p class="small mut mt">Link do cliente: <a href="${esc(p.link)}" target="_blank">${esc(p.link)}</a></p>`,
     foot: `${p.status !== 'cancelado' && pode('pedidos_cancelar') ? '<button class="btn ghost" id="canc" style="color:var(--red)">Cancelar</button>' : ''}${['novo', 'separando'].includes(p.status) && pode('pedidos') ? '<button class="btn ghost" id="edt">✎ Editar itens e preços</button>' : ''}<span class="sp"></span>
       ${p.telefone ? `<button class="btn ghost" id="wa" style="color:#137a42">WhatsApp</button>${p.aberto > 0.009 ? '<button class="btn ghost" id="cob" style="color:var(--red)">Cobrar</button>' : ''}` : ''}
@@ -233,6 +408,7 @@ async function detalhePedido(id) {
   $('#wa', m) && ($('#wa', m).onclick = () => wa('pedido')); $('#cob', m) && ($('#cob', m).onclick = () => wa('cobranca'));
   $('#rec', m) && ($('#rec', m).onclick = () => { m.close(); receberModal(p); });
   $('#edt', m) && ($('#edt', m).onclick = () => { m.close(); novoPedido(null, p); });
+  $('#anx', m) && ($('#anx', m).onclick = () => { m.close(); anexarComprovante(p); });
   $('#canc', m) && ($('#canc', m).onclick = async () => {
     const mot = prompt('Motivo do cancelamento:'); if (mot === null) return;
     try { await api(`/api/pedidos/${p.id}/status`, { body: { status: 'cancelado', motivo: mot, estornar: p.pago > 0 && confirm('Este pedido tem pagamento registrado. Estornar e cancelar?') } }); m.close(); ok('Pedido cancelado e estoque devolvido'); render(); } catch (e) { err(e); }
@@ -354,12 +530,15 @@ async function novoPedido(clienteId, ed) {
     try {
       if (ed) {
         const p = await api(`/api/pedidos/${ed.id}/itens`, { method: 'PUT', body: { itens: itensBody(), frete: frete(), desconto: st.desconto, obs: $('#obs', m).value, data_entrega: $('#de', m).value } });
+        if (p._offline) { m.close(); toast('📴 Sem internet: alteração salva no aparelho, vai ser enviada sozinha'); render(); return; }
         m.close(); ok(`Pedido #${p.numero} atualizado`); await carregar(); render(); setTimeout(() => detalhePedido(p.id), 250); return;
       }
       const p = await api('/api/pedidos', { body: { cliente_id: st.cliente_id || null, tabela_id: st.tabela_id, rota_id: st.rota_id || null, frete: frete(), desconto: st.desconto,
         condicao: st.condicao, prazo_dias: st.prazo, forma: st.forma, pago_agora: $('#pg', m)?.checked, obs: $('#obs', m).value, data_entrega: $('#de', m).value,
         cliente_nome: !st.cliente_id ? st.nome_novo || '' : '', cliente_tel: st.tel_novo || '', cliente_cidade: st.cid_novo || '',
-        canal: cli() ? (cli().tipo === 'revenda' ? 'revenda' : 'encomenda') : st.nome_novo ? 'encomenda' : 'balcao', itens: itensBody() } });
+        canal: cli() ? (cli().tipo === 'revenda' ? 'revenda' : 'encomenda') : st.nome_novo ? 'encomenda' : 'balcao', itens: itensBody() },
+        resumo: { cliente: cli()?.nome || st.nome_novo || 'Balcão', total: total(), itens: Object.entries(st.itens).filter(([, q]) => q > 0).map(([pid, q]) => `${qtdTxt(pid, q)} ${prod(pid).nome}`) } });
+      if (p._offline) { m.close(); toast('📴 Sem internet: pedido salvo no aparelho. Ele entra no sistema sozinho quando a conexão voltar.'); render(); return; }
       m.close(); ok(`Pedido #${p.numero} criado`); await carregar(); render(); setTimeout(() => detalhePedido(p.id), 250);
     } catch (e) { err(e); b.disabled = false; }
   };
@@ -762,7 +941,8 @@ async function telaConfig(main) {
     const f = (k, l, ph = '') => `<div><label>${l}</label><input data-c="${k}" value="${esc(c[k] || '')}" placeholder="${esc(ph)}"></div>`;
     el.innerHTML = `<div class="card"><div class="g2">${f('empresa', 'Nome')}${f('slogan', 'Slogan')}${f('endereco', 'Endereço')}${f('telefones', 'Telefones')}${f('whatsapp', 'WhatsApp principal (só números)')}${f('instagram', 'Instagram')}${f('cnpj', 'CNPJ')}${f('selo', 'Selo / certificação')}
       ${f('pix_chave', 'Chave Pix', 'CNPJ, e-mail, telefone ou aleatória')}${f('pix_nome', 'Nome do recebedor Pix')}${f('pix_cidade', 'Cidade do recebedor Pix')}${f('custo_caju_kg', 'Custo do caju (R$/kg) para custo do lote')}
-      ${f('lat_fazenda', 'Latitude da fazenda')}${f('lng_fazenda', 'Longitude da fazenda')}</div><button class="btn mt" id="sv">Salvar</button>
+      ${f('lat_fazenda', 'Latitude da fazenda')}${f('lng_fazenda', 'Longitude da fazenda')}
+      <div><label>Foto do espelho assinado na entrega</label><select data-c="exigir_comprovante"><option value="1" ${c.exigir_comprovante === '1' ? 'selected' : ''}>Obrigatória (ou motivo)</option><option value="0" ${c.exigir_comprovante !== '1' ? 'selected' : ''}>Opcional</option></select></div></div><button class="btn mt" id="sv">Salvar</button>
       <p class="small mut mt">Com a chave Pix preenchida, o espelho de pedido e a área do cliente mostram o QR Code com o valor certo.</p></div>`;
     $('#sv').onclick = salvarCfg;
   } else if (aba === 'online') {
